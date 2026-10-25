@@ -1,0 +1,34 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+# VLC's plugin cache for ES. Without plugins.dat every libVLC instance (ES
+# at start, each video thumbnail) dlopen()s every plugin to read its
+# description and keeps them all loaded. VLC reads the cache only from its
+# plugin directory, and vlc-cache-gen writes it there, but /usr is
+# read-only: the image links /usr/lib/vlc/plugins/plugins.dat to this
+# directory, and this builds the cache in a mirror of the plugin tree made
+# of symlinks (VLC stats through them, so relative paths, sizes and mtimes
+# match the real plugins). Rebuilt only when the plugin files change.
+plugins=${A12_VLC_PLUGINS:-/usr/lib/vlc/plugins}
+dir=${A12_VLC_CACHE:-/storage/.cache/vlc/plugins}
+gen=${A12_VLC_CACHE_GEN:-/usr/lib/vlc/vlc-cache-gen}
+
+cd "$plugins" || exit 1
+# What VLC checks for each cached plugin: size and mtime.
+stamp=$(find . -name '*.so' -exec ls -ln --full-time {} + | sort | md5sum)
+if [ -s "$dir/plugins.dat" ] && [ "$(cat "$dir/stamp" 2>/dev/null)" = "$stamp" ]; then
+  exit 0
+fi
+rm -rf "$dir.new"
+mkdir -p "$dir.new" || exit 1
+for so in $(find . -name '*.so'); do
+  so=${so#./}
+  mkdir -p "$dir.new/$(dirname "$so")" && ln -s "$plugins/$so" "$dir.new/$so" || exit 1
+done
+# vlc-cache-gen also rescans $plugins and fails to write there: harmless.
+"$gen" "$dir.new" >/dev/null 2>&1
+if [ ! -s "$dir.new/plugins.dat" ]; then
+  rm -rf "$dir.new"
+  exit 1
+fi
+echo "$stamp" > "$dir.new/stamp"
+rm -rf "$dir" && mv "$dir.new" "$dir"

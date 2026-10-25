@@ -14,6 +14,11 @@ post_makeinstall_target() {
   case "${DEVICE}" in
     *)      cp -P ${PKG_DIR}/sources/main.conf        ${INSTALL}/etc/iwd/main.conf ;;
   esac
+  if [ "${DEVICE}" = "RK3128" ]; then
+    # Test PAE socket EAPOL delivery for the A12's timed-out RTL8188EU
+    # handshake, matching the transport used by working KNULLI.
+    cat ${PKG_DIR}/sources/a12-driver-quirks.conf >>${INSTALL}/etc/iwd/main.conf
+  fi
 
   mkdir -p ${INSTALL}/usr/bin
     cp -P ${PKG_DIR}/scripts/iwd_get-networks ${INSTALL}/usr/bin

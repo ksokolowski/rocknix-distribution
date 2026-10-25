@@ -7,6 +7,11 @@
 . /etc/os-release
 set_kill set "PortMaster"
 
+# PortMaster unpacks runtimes and downloads into TMPDIR; /tmp is in RAM,
+# which a 256 MB device runs out of.
+mkdir -p /storage/.cache/portmaster/tmp
+export TMPDIR=/storage/.cache/portmaster/tmp
+
 #Make sure PortMaster exists in .config/PortMaster
 if [ ! -d "/storage/.config/PortMaster" ]; then
     mkdir -p "/storage/.config/PortMaster"
@@ -43,6 +48,19 @@ if [ -f /storage/roms/ports/PortMaster/tasksetter ]; then
 fi
 
 #Use PortMasters gptokeyb
+# 32-bit ARM: the zip's generic helper names are aarch64 builds; use the
+# .armhf ones (again after every PortMaster update).
+case "$(uname -m)" in
+  armv7*|armv8l)
+    for helper in gptokeyb gptokeyb2 sdl2imgshow sdl_resolution innoextract xdelta3 7zzs; do
+      if [ -f "/storage/roms/ports/PortMaster/${helper}.armhf" ]; then
+        cp -f "/storage/roms/ports/PortMaster/${helper}.armhf" "/storage/roms/ports/PortMaster/${helper}"
+        chmod +x "/storage/roms/ports/PortMaster/${helper}"
+      fi
+    done
+    ;;
+esac
+
 rm gptokeyb
 cp /storage/roms/ports/PortMaster/gptokeyb gptokeyb
 

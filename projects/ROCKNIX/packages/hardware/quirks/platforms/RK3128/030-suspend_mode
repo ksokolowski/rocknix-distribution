@@ -1,0 +1,12 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-2.0
+. /etc/profile.d/001-functions
+set_setting system.suspendmode off
+mkdir -p /storage/.config/sleep.conf.d
+cat >/storage/.config/sleep.conf.d/sleep.conf <<'EOF'
+[Sleep]
+AllowSuspend=no
+AllowHibernation=no
+AllowHybridSleep=no
+AllowSuspendThenHibernate=no
+EOF

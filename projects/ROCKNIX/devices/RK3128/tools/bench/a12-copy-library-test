@@ -1,0 +1,203 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Run on A12: process-local arm-mem/glibc comparison, preserving player files.
+set -eu
+. /etc/profile >/dev/null 2>&1
+# A new run needs a new directory (the 2026-10-10 one is the archived run).
+root=${A12_COPY_LIBRARY_ROOT:-/storage/bench/copy-library-2026-10-10}
+out=$root/comparison
+mkdir -p "$out/saves" "$out/states" "$out/config"
+test ! -e "$out/started"
+if pidof retroarch olduvai.armhf olduvai-348e56a.armhf >/dev/null; then
+    echo 'A game is already running' >&2
+    exit 1
+fi
+# Panel mode must match the run being compared: Y (60 Hz) is the default
+# since test 49; the archived 2026-10-10 run used N (85 Hz).
+refresh_60hz=$(cat /sys/module/panel_a12/parameters/refresh_60hz)
+test "$refresh_60hz" = "${A12_EXPECT_REFRESH_60HZ:-Y}"
+test ! -e /storage/.config/a12-game-monitor.enabled
+test -r /storage/bench/olduvai/fonts/FreckleFace-Regular.ttf
+test -r /usr/lib/libc.so.6
+grep -qx /usr/lib/libarmmem-v7l.so /etc/ld.so.preload
+cpu=/sys/devices/system/cpu/cpufreq/policy0/scaling_governor
+gpu=/sys/class/devfreq/10090000.gpu/governor
+old_cpu=$(cat "$cpu")
+old_gpu=$(cat "$gpu")
+frontend=$(systemctl is-active emustation.service || true)
+cleanup() {
+    echo "$old_cpu" > "$cpu"
+    echo "$old_gpu" > "$gpu"
+    [ "$frontend" != active ] || systemctl start emustation.service
+}
+trap cleanup EXIT
+trap 'exit 130' INT TERM HUP
+touch "$out/started"
+sha256sum /flash/KERNEL /flash/extlinux/extlinux.conf /etc/ld.so.preload \
+    /usr/lib/libc.so.6 /usr/lib/libarmmem-v7l.so /usr/lib/libgallium* \
+    /usr/lib/libretro/fbneo_libretro.so /storage/bench/ffight.zip \
+    /storage/bench/olduvai/olduvai-348e56a.armhf \
+    /storage/bench/olduvai/deep_run_l1_in.jsonl \
+    /storage/bench/olduvai/fonts/FreckleFace-Regular.ttf \
+    /storage/.config/retroarch/retroarch.cfg \
+    '/storage/.config/retroarch/config/FinalBurn Neo/FinalBurn Neo.opt' \
+    '/storage/.config/retroarch/config/FinalBurn Neo/cps1.opt' > "$out/inputs.sha256"
+{ cat /proc/sys/kernel/random/boot_id /proc/cmdline; echo "refresh_60hz=$refresh_60hz"; } > "$out/boot.txt"
+cat /sys/kernel/debug/clk/clk_summary /sys/kernel/debug/dri/0/state > "$out/display-before.txt"
+systemctl stop emustation.service
+sleep 3
+echo performance > "$cpu"
+echo performance > "$gpu"
+unset LIMA_DEBUG OLDUVAI_UNTHROTTLED OLDUVAI_NO_VSYNC LD_DEBUG LD_DEBUG_OUTPUT LD_PRELOAD
+export XDG_RUNTIME_DIR=/var/run/0-runtime-dir SDL_VIDEODRIVER=kmsdrm
+export OLDUVAI_DIRTY=1 OLDUVAI_FRAME_STATS=1
+export XDG_CONFIG_HOME="$out/config" OLDUVAI_BUG_DIR="$out/bugs"
+cp /storage/.config/retroarch/retroarch.cfg "$out/retroarch.cfg"
+cat > "$out/core-options.cfg" <<OPTIONS
+fbneo-cyclone = "enabled"
+fbneo-samplerate = "48000"
+OPTIONS
+cat > "$out/override.cfg" <<CONFIG
+config_save_on_exit = "false"
+core_options_path = "$out/core-options.cfg"
+global_core_options = "true"
+game_specific_options = "false"
+auto_overrides_enable = "false"
+auto_remaps_enable = "false"
+auto_shaders_enable = "false"
+content_history_enable = "false"
+content_runtime_log = "false"
+content_runtime_log_aggregate = "false"
+video_driver = "gl"
+video_threaded = "true"
+video_max_swapchain_images = "3"
+video_vsync = "false"
+video_frame_delay = "0"
+video_shader_enable = "false"
+video_smooth = "false"
+rewind_enable = "false"
+run_ahead_enabled = "false"
+preemptive_frames_enable = "false"
+fps_show = "false"
+savestate_auto_load = "false"
+savestate_auto_save = "false"
+savefile_directory = "$out/saves"
+savestate_directory = "$out/states"
+audio_enable = "false"
+audio_sync = "false"
+audio_driver = "null"
+CONFIG
+sed -e 's/^video_vsync = .*/video_vsync = "true"/' \
+    -e 's/^audio_enable = .*/audio_enable = "true"/' \
+    -e 's/^audio_sync = .*/audio_sync = "true"/' \
+    -e 's/^audio_driver = .*/audio_driver = "pulse"/' \
+    "$out/override.cfg" > "$out/paced.cfg"
+snapshot() {
+    cat /proc/uptime /proc/meminfo /proc/vmstat /proc/pressure/cpu /proc/pressure/memory
+    cat /sys/block/zram0/mm_stat
+}
+variant_run() (
+    variant=$1
+    shift
+    case "$variant" in
+        arm) unset LD_PRELOAD ;;
+        glibc) export LD_PRELOAD=/usr/lib/libc.so.6 ;;
+        *) exit 2 ;;
+    esac
+    exec "$@"
+)
+game() {
+    variant=$1; work=$2; frames=$3; paced=$4
+    if [ "$work" = retroarch ]; then
+        cfg=$out/override.cfg
+        [ "$paced" = no ] || cfg=$out/paced.cfg
+        variant_run "$variant" timeout 180 retroarch -v \
+            -L /usr/lib/libretro/fbneo_libretro.so --config "$out/retroarch.cfg" \
+            --appendconfig "$cfg" --max-frames="$frames" \
+            --sram-mode=noload-nosave /storage/bench/ffight.zip
+    else
+        (
+            cd /storage/roms/ports/olduvai
+            export XDG_RUNTIME_DIR=/var/run SDL_AUDIODRIVER=dummy
+            if [ "$work" = classic ]; then preset=dos-handheld
+            else preset=hd-handheld; fi
+            if [ "$paced" = no ]; then export OLDUVAI_UNTHROTTLED=1
+            else unset OLDUVAI_UNTHROTTLED; fi
+            variant_run "$variant" timeout 180 /storage/bench/olduvai/olduvai-348e56a.armhf \
+                --game-dir ./game --rom-dir ./mt32-roms --no-config \
+                --default-profile "$preset" --music-device off --play --level 1 \
+                --replay /storage/bench/olduvai/deep_run_l1_in.jsonl \
+                --play-frames "$frames" --transitions classic
+        )
+    fi
+}
+run() {
+    name=$1; variant=$2; work=$3; frames=$4; paced=$5
+    echo "START $name"
+    snapshot > "$out/$name-before.txt"
+    read -r start rest < /proc/uptime
+    game "$variant" "$work" "$frames" "$paced" </dev/null > "$out/$name.log" 2>&1
+    read -r end rest < /proc/uptime
+    printf '%s %s\n' "$start" "$end" > "$out/$name.time"
+    snapshot > "$out/$name-after.txt"
+    if [ "$work" = retroarch ]; then
+        grep -q 'Starting threaded video driver' "$out/$name.log"
+        if [ "$paced" = yes ]; then
+            grep -q '\[PulseAudio\] Requested' "$out/$name.log"
+            ! grep -q 'Failed to initialize audio driver' "$out/$name.log"
+        fi
+    else
+        ! grep -q 'font .*not found\|vector text/HUD disabled' "$out/$name.log"
+        grep -E 'renderer:|render-stats|frame-stats' "$out/$name.log"
+    fi
+    echo "DONE $name"
+}
+# Binding traces also warm each application/variant; never trace timed runs.
+for work in retroarch classic hd; do
+    for variant in arm glibc; do
+        echo "AUDIT $variant $work"
+        export LD_DEBUG=bindings LD_DEBUG_OUTPUT="$out/bind-$variant-$work"
+        if [ "$work" = retroarch ]; then frames=300; else frames=120; fi
+        game "$variant" "$work" "$frames" no </dev/null > "$out/audit-$variant-$work.log" 2>&1
+        unset LD_DEBUG LD_DEBUG_OUTPUT
+        grep -E 'binding file .*(memcpy|memset|memmove|memcmp|strlen)' \
+            "$out/bind-$variant-$work".* > "$out/providers-$variant-$work.txt" || true
+        # Dynamic-linker output surrounds names with a backtick and apostrophe.
+        grep -E 'binding file .*memcpy' "$out/bind-$variant-$work".* \
+            > "$out/memcpy-provider-$variant-$work.txt"
+        if [ "$variant" = arm ]; then provider=libarmmem-v7l.so
+        else provider=libc.so.6; fi
+        grep -q "to /usr/lib/$provider" "$out/memcpy-provider-$variant-$work.txt"
+        if [ "$work" != retroarch ]; then
+            grep "binding file /storage/bench/olduvai/olduvai-348e56a.armhf .*to /usr/lib/$provider" \
+                "$out/memcpy-provider-$variant-$work.txt" > "$out/verified-$variant-$work.txt"
+        else
+            grep "binding file .*fbneo_libretro.so .*to /usr/lib/$provider" \
+                "$out/memcpy-provider-$variant-$work.txt" > "$out/verified-$variant-$work.txt"
+        fi
+    done
+done
+for n in 1 2 3; do
+    if [ "$n" = 2 ]; then variants='glibc arm'; else variants='arm glibc'; fi
+    for work in retroarch classic hd; do
+        for variant in $variants; do
+            if [ "$work" = retroarch ]; then
+                for frames in 300 2100; do
+                    run "$work-$variant-$frames-$n" "$variant" "$work" "$frames" no
+                done
+            else
+                run "$work-$variant-600-$n" "$variant" "$work" 600 no
+            fi
+        done
+    done
+done
+# A single paced pair is supplementary, not a repeatability claim.
+pactl info > "$out/pulse-info.txt"
+for variant in glibc arm; do
+    run "paced-retroarch-$variant" "$variant" retroarch 2100 yes
+    run "paced-hd-$variant" "$variant" hd 600 yes
+done
+sha256sum -c "$out/inputs.sha256" > "$out/inputs-after.txt"
+cat /sys/kernel/debug/clk/clk_summary /sys/kernel/debug/dri/0/state > "$out/display-after.txt"
+touch "$out/complete"
+echo 'ALL COMPLETE'

@@ -1,0 +1,10 @@
+[Unit]
+Description=Network neighbour announcement timer
+
+[Timer]
+OnBootSec=20s
+OnUnitActiveSec=20s
+AccuracySec=2s
+
+[Install]
+WantedBy=timers.target

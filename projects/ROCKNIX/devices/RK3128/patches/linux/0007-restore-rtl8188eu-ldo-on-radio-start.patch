@@ -1,0 +1,70 @@
+Subject: [PATCH] wifi: rtl8xxxu: restore RTL8188EU radio state on restart
+
+rtl8188e_disable_rf() enters LDO sleep through active_to_emu(), but
+rtl8188e_enable_rf() leaves REG_LPLDO_CTRL bit 4 set. On the A12 revision A
+with USB 0bda:8179, stopping/restarting IWD reproduces a failed activation:
+LPLDO_CTRL goes from 0x05 to 0x15 and remains 0x15 after RF is enabled.
+Reprobing the adapter restores 0x05 and connectivity without a power cycle.
+
+Also preserve RF6052_REG_AC before disable_rf() zeros it and restore the
+calibrated value on the next enable_rf(), without replacing it with a guessed
+constant. The vendor PHY calibration uses the same save/restore approach.
+
+Restore normal LDO mode before enabling RF, matching the existing
+rtl8188e_emu_to_active() sequence and the local KNULLI vendor driver's
+RTL8188E_TRANS_CARDEMU_TO_ACT in include/pwrseq.h (GPLv2).
+This changes the mode of the adapter's internal regulator, not USB VBUS
+voltage. Keep the existing RF and TX enable sequence.
+
+--- a/drivers/net/wireless/realtek/rtl8xxxu/8188e.c
++++ b/drivers/net/wireless/realtek/rtl8xxxu/8188e.c
+@@ -1262,8 +1262,22 @@
+ static void rtl8188e_enable_rf(struct rtl8xxxu_priv *priv)
+ {
+ 	u32 val32;
++	u8 val8;
++
++	/* Undo the LDO sleep mode set by rtl8188e_disable_rf(). */
++	val8 = rtl8xxxu_read8(priv, REG_LPLDO_CTRL);
++	val8 &= ~BIT(4);
++	rtl8xxxu_write8(priv, REG_LPLDO_CTRL, val8);
+ 
+ 	rtl8xxxu_write8(priv, REG_RF_CTRL, RF_ENABLE | RF_RSTB | RF_SDMRSTB);
++
++	if (priv->rtl8188e_rf_ac_valid) {
++		rtl8xxxu_write_rfreg(priv, RF_A, RF6052_REG_AC,
++				   priv->rtl8188e_rf_ac);
++		dev_dbg(&priv->udev->dev, "Restored RF AC %#x\n",
++			priv->rtl8188e_rf_ac);
++		priv->rtl8188e_rf_ac_valid = false;
++	}
+ 
+ 	val32 = rtl8xxxu_read32(priv, REG_OFDM0_TRX_PATH_ENABLE);
+ 	val32 &= ~(OFDM_RF_PATH_RX_MASK | OFDM_RF_PATH_TX_MASK);
+@@ -1280,6 +1294,15 @@
+ 	val32 = rtl8xxxu_read32(priv, REG_OFDM0_TRX_PATH_ENABLE);
+ 	val32 &= ~OFDM_RF_PATH_TX_MASK;
+ 	rtl8xxxu_write32(priv, REG_OFDM0_TRX_PATH_ENABLE, val32);
++
++	/* Preserve the calibrated RF state before powering the radio down. */
++	if (!priv->rtl8188e_rf_ac_valid) {
++		priv->rtl8188e_rf_ac = rtl8xxxu_read_rfreg(priv, RF_A,
++						    RF6052_REG_AC);
++		priv->rtl8188e_rf_ac_valid = true;
++		dev_dbg(&priv->udev->dev, "Saved RF AC %#x\n",
++			priv->rtl8188e_rf_ac);
++	}
+ 
+ 	/* Power down RF module */
+ 	rtl8xxxu_write_rfreg(priv, RF_A, RF6052_REG_AC, 0);
+--- a/drivers/net/wireless/realtek/rtl8xxxu/rtl8xxxu.h
++++ b/drivers/net/wireless/realtek/rtl8xxxu/rtl8xxxu.h
+@@ -1866,6 +1866,8 @@
+ 	u32 regeb4;
+ 	u32 regebc;
+ 	u32 regrcr;
++	u32 rtl8188e_rf_ac;
++	bool rtl8188e_rf_ac_valid;
+ 	int next_mbox;
+ 	int nr_out_eps;
+ 

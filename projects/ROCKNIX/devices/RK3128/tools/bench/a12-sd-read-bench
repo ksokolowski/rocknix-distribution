@@ -1,0 +1,20 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Run on A12: cold SD read throughput and CPU cost (raw device + a SquashFS file).
+cpu() { awk '/^cpu /{print $2+$3+$4+$6+$7+$8, $5}' /proc/stat; }
+irq() { awk '/dw-mci/{s=0; for(i=2;i<=5;i++) s+=$i; print s}' /proc/interrupts | head -1; }
+run() {
+  sync; echo 3 > /proc/sys/vm/drop_caches
+  set -- "$@"; b=$(cpu); i0=$(irq); t0=$(cut -d' ' -f1 /proc/uptime)
+  "$@" >/dev/null 2>&1
+  t1=$(cut -d' ' -f1 /proc/uptime); a=$(cpu); i1=$(irq)
+  echo "$b $a $t0 $t1 $i0 $i1"
+}
+mb=300
+r=$(run dd if=/dev/mmcblk0 of=/dev/null bs=1M count=$mb skip=4096 iflag=direct)
+set -- $r; busy=$(($3-$1)); idle=$(($4-$2)); dt=$(awk "BEGIN{print $6-$5}")
+echo "raw ${mb}MB: $(awk "BEGIN{printf \"%.1f MB/s\", $mb/$dt}") in ${dt}s, cpu busy $(awk "BEGIN{printf \"%.0f%%\", 100*$busy/($busy+$idle)}") of 4 cores, irq/MB $(( ($8-$7)/mb ))"
+f=/usr/bin/scummvm; sz=$(( $(stat -c %s $f) / 1048576 ))
+r=$(run cat $f)
+set -- $r; busy=$(($3-$1)); idle=$(($4-$2)); dt=$(awk "BEGIN{print $6-$5}")
+echo "scummvm ${sz}MB cold: ${dt}s, cpu busy $(awk "BEGIN{printf \"%.0f%%\", 100*$busy/($busy+$idle)}") of 4 cores, irq $(( $8-$7 ))"

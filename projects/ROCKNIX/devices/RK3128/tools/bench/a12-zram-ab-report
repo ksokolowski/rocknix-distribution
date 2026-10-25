@@ -1,0 +1,114 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-or-later
+"""Summarise an a12-zram-ab output directory copied from the A12 (arms are
+grouped by the name after "N-": a compressor or a variant such as recomp).
+
+Usage: a12-zram-ab-report DIR
+Per arm and workload: duration, swap traffic, major faults, memory-pressure
+stall time (PSI), kswapd CPU, zram ratio and Olduvai frame-time statistics;
+then the per-algorithm median of each column.
+"""
+import pathlib
+import re
+import statistics
+import sys
+
+STEPS = ("retroarch", "recompress", "olduvai-dos-handheld", "olduvai-hd-handheld")
+
+
+def snapshot(path):
+    text = path.read_text()
+    values = {"uptime": float(text.split()[0])}
+    for key in ("pswpin", "pswpout", "pgmajfault", "allocstall_normal"):
+        m = re.search(rf"^{key} (\d+)", text, re.M)
+        values[key] = int(m[1]) if m else 0
+    m = re.search(r"^psi_memory: some .*?total=(\d+) full .*?total=(\d+)", text, re.M)
+    values["psi_some_us"], values["psi_full_us"] = int(m[1]), int(m[2])
+    mm = list(map(int, re.search(r"^mm_stat: (.*)$", text, re.M)[1].split()))
+    values["orig"], values["compr"], values["zram_used"] = mm[0], mm[1], mm[2]
+    m = re.search(r"VmSwap: (\d+)", text)
+    values["es_swap_kb"] = int(m[1]) if m else 0
+    values["kswapd"] = int(re.search(r"^kswapd_ticks: (\d+)", text, re.M)[1])
+    return values
+
+
+def olduvai(log):
+    m = re.search(r"render-stats L1: fps=([\d.]+) \(1%low=([\d.]+) .*?p99=([\d.]+) max=([\d.]+)", log.read_text())
+    return dict(zip(("fps", "low1", "p99_ms", "max_ms"), map(float, m.groups()))) if m else {}
+
+
+def peaks(path, cma_total_kib=32768):
+    """Peaks from an in-step samples file (a12-zram-ab sample_loop)."""
+    out = {"cma_used_mib": 0.0, "avail_min_mib": float("inf"), "es_swap_mib": 0.0,
+           "game_pss_mib": 0.0, "game_gpu_mib": 0.0, "es_gpu_mib": 0.0}
+    for line in path.read_text().splitlines():
+        head, *procs = line.split("|")
+        mem = dict(re.findall(r"(\w+):=(\d+)", head))
+        if "CmaFree" in mem:
+            out["cma_used_mib"] = max(out["cma_used_mib"], (cma_total_kib - int(mem["CmaFree"])) / 1024)
+        if "MemAvailable" in mem:
+            out["avail_min_mib"] = min(out["avail_min_mib"], int(mem["MemAvailable"]) / 1024)
+        for proc in procs:
+            name = proc.split()[0] if proc.split() else ""
+            pss = re.search(r"Pss:(\d+)", proc)
+            swap = re.search(r"SwapPss:(\d+)", proc)
+            gpu = re.search(r"gpu_kib=(\d+)", proc)
+            if name.startswith("emulationstatio"):
+                out["es_swap_mib"] = max(out["es_swap_mib"], int(swap[1]) / 1024 if swap else 0)
+                out["es_gpu_mib"] = max(out["es_gpu_mib"], int(gpu[1]) / 1024 if gpu else 0)
+            elif name:
+                out["game_pss_mib"] = max(out["game_pss_mib"], int(pss[1]) / 1024 if pss else 0)
+                out["game_gpu_mib"] = max(out["game_gpu_mib"], int(gpu[1]) / 1024 if gpu else 0)
+    return out
+
+
+def main(root):
+    rows = []
+    for arm in sorted(p for p in root.iterdir() if p.is_dir() and (p / "done").exists()):
+        algo = arm.name.split("-", 1)[1]
+        for step in STEPS:
+            if not (arm / f"{step}-before.txt").exists():
+                continue
+            a, b = snapshot(arm / f"{step}-before.txt"), snapshot(arm / f"{step}-after.txt")
+            row = {"arm": arm.name, "algo": algo, "step": step,
+                   "secs": b["uptime"] - a["uptime"],
+                   "swpin": b["pswpin"] - a["pswpin"], "swpout": b["pswpout"] - a["pswpout"],
+                   "majflt": b["pgmajfault"] - a["pgmajfault"],
+                   "psi_some_ms": (b["psi_some_us"] - a["psi_some_us"]) / 1000,
+                   "psi_full_ms": (b["psi_full_us"] - a["psi_full_us"]) / 1000,
+                   "kswapd_ticks": b["kswapd"] - a["kswapd"],
+                   "ratio": b["orig"] / b["compr"] if b["compr"] else 0,
+                   "zram_mib": b["zram_used"] / 2**20, "es_swap_mib": b["es_swap_kb"] / 1024}
+            if step.startswith("olduvai"):
+                row.update(olduvai(arm / f"{step}.log"))
+            rows.append(row)
+    cols = ["secs", "swpin", "swpout", "majflt", "psi_some_ms", "psi_full_ms", "kswapd_ticks",
+            "ratio", "zram_mib", "fps", "low1", "p99_ms", "max_ms"]
+    print("arm step " + " ".join(cols))
+    for r in rows:
+        print(r["arm"], r["step"], " ".join(f"{r[c]:.2f}" if c in r else "-" for c in cols))
+    print("\nmedian by algorithm")
+    for step in STEPS:
+        for algo in sorted({r["algo"] for r in rows}):
+            sel = [r for r in rows if r["algo"] == algo and r["step"] == step]
+            if not sel:
+                continue
+            print(algo, step, " ".join(
+                f"{statistics.median(r[c] for r in sel):.2f}" if all(c in r for r in sel) else "-"
+                for c in cols))
+
+
+def print_peaks(root):
+    files = sorted(root.glob("*/*-samples.txt"))
+    if not files:
+        return
+    cols = ["cma_used_mib", "avail_min_mib", "es_swap_mib", "es_gpu_mib", "game_pss_mib", "game_gpu_mib"]
+    print("\nin-step peaks (MiB)\narm step " + " ".join(cols))
+    for f in files:
+        pk = peaks(f)
+        print(f.parent.name, f.name[:-len("-samples.txt")], " ".join(f"{pk[c]:.1f}" for c in cols))
+
+
+if __name__ == "__main__":
+    main(pathlib.Path(sys.argv[1]))
+    print_peaks(pathlib.Path(sys.argv[1]))

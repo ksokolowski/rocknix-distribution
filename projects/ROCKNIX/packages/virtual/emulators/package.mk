@@ -37,6 +37,16 @@ fi
 
 ### Emulators or cores for specific devices
 case "${DEVICE}" in
+  RK3128)
+    # The A12 ships the cores below; es_systems lists only those (owner policy:
+    # the most accurate core that runs is the default, core survey 2026-10-11).
+    ES_ONLY_BUILT_CORES="yes"
+    # PortMaster ran on the A12 when installed by hand (TEST_LOG); 32-bit ports only.
+    PKG_EMUS="scummvm-sa moonlight portmaster"
+    LIBRETRO_CORES="fceumm-lr quicknes-lr gambatte-lr gearboy-lr gearsystem-lr genesis-plus-gx-lr picodrive-lr snes9x2002-lr snes9x2005_plus-lr snes9x2010-lr gpsp-lr mgba-lr pcsx_rearmed-lr mame2003-plus-lr fbalpha2012-lr fbneo-lr stella-lr handy-lr beetle-ngp-lr beetle-pce-fast-lr pokemini-lr freeintv-lr fuse-lr cap32-lr prboom-lr gw-lr bluemsx-lr dosbox-pure-lr vice-lr nestopia-lr prosystem-lr vecx-lr beetle-wswan-lr beetle-vb-lr uae4arm-lr"
+    PKG_RETROARCH="core-info libretro-database retroarch retroarch-assets retroarch-joypads retroarch-overlays retropie-shaders"
+    PKG_DEPENDS_TARGET+=" common-shaders glsl-shaders"
+    ;;
   H700|RK3326)
     [ "${ENABLE_32BIT}" == "true" ] && EMUS_32BIT="box86 desmume-lr gpsp-lr pcsx_rearmed-lr yabadabadoo-lr"
     PKG_DEPENDS_TARGET+=" common-shaders glsl-shaders"
@@ -182,7 +192,7 @@ makeinstall_target() {
 
   ### Commodore Amiga
   case ${DEVICE} in
-    H700|RK3326|RK3399|RK3576|RK3566|RK3588|SM4450|SM6115|SM8250|SM8550|SM8650|SM8750)
+    RK3128|H700|RK3326|RK3399|RK3576|RK3566|RK3588|SM4450|SM6115|SM8250|SM8550|SM8650|SM8750)
       add_emu_core amiga retroarch puae2021 true
       add_emu_core amiga retroarch puae false
        add_emu_core amiga retroarch uae4arm false
@@ -305,7 +315,16 @@ makeinstall_target() {
   add_es_system c16
 
   ### Commodore 64
-  add_emu_core c64 retroarch vice_x64 true
+  case ${DEVICE} in
+    RK3128)
+      # The A12 defaults to the cycle-exact x64sc, x64 is the fast fallback.
+      add_emu_core c64 retroarch vice_x64sc true
+      add_emu_core c64 retroarch vice_x64 false
+      ;;
+    *)
+      add_emu_core c64 retroarch vice_x64 true
+      ;;
+  esac
   add_emu_core c64 vicesa x64sc false
   add_es_system c64
 
@@ -511,7 +530,7 @@ makeinstall_target() {
   add_emu_core gba retroarch beetle_gba false
   add_emu_core gba retroarch skyemu false
   case ${DEVICE} in
-    H700|RK3326|RK3576|RK3566|S922X)
+    H700|RK3128|RK3326|RK3576|RK3566|S922X)
       add_emu_core gba retroarch gpsp false
       ;;
     RK3399|RK3588|SM4450|SM6115|SM8250|SM8550)
@@ -1138,7 +1157,7 @@ makeinstall_target() {
 
   ### Sony Playstation
   case ${DEVICE} in
-    H700|RK3326)
+    H700|RK3128|RK3326)
       add_emu_core psx retroarch pcsx_rearmed32 true
       add_emu_core psx retroarch pcsx_rearmed false
       add_emu_core psx retroarch duckstation false

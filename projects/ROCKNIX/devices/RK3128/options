@@ -1,0 +1,49 @@
+# SPDX-License-Identifier: GPL-2.0
+
+TARGET_CPU="cortex-a7"
+TARGET_CPU_FLAGS=""
+TARGET_KERNEL_ARCH="arm"
+TARGET_FLOAT="hard"
+TARGET_FPU="neon-vfpv4"
+NATIVE_ARM="yes"
+ENABLE_32BIT="false"
+HW_CPU="Rockchip RK3128"
+PARTITION_TABLE="msdos"
+SYSTEM_PART_START=32768
+KERNEL_TARGET="zImage"
+KERNEL_MAKE_EXTRACMD=" $(get_kernel_make_extracmd)"
+PKG_BUILD_PERF="yes"
+EXTRA_CMDLINE="earlycon=uart8250,mmio32,0x20060000 console=ttyS0,115200 quiet panic=10 oops=panic"
+# B12 step 6 (test 61): no fbdev/fbcon by default (frees ≈4 MB of CMA);
+# the splash, initramfs logo and update progress run on KMS.
+# A12_NO_FBDEV=no builds the old fbdev variant.
+if [ "${A12_NO_FBDEV}" != "no" ]; then
+  EXTRA_CMDLINE+=" a12_kms_splash"
+fi
+DEBUG_TTY="/dev/ttyS0"
+BOOTLOADER="u-boot"
+UBOOT_FIRMWARE="rk3128-blobs"
+GRAPHIC_DRIVERS="lima"
+OPENGL="no"
+OPENGLES="mesa"
+PREFER_GLES="yes"
+GLES_VERSION="2"
+VULKAN="no"
+VULKAN_SUPPORT="no"
+V4L2_SUPPORT="no"
+DISPLAYSERVER="no"
+WINDOWMANAGER="none"
+BATTERYPLUS_SUPPORT="no"
+# ALSA dmix/softvol instead of PipeWire: about 10 MB more free RAM (test 39).
+PIPEWIRE_SUPPORT="no"
+ROCKNIX_JOYPAD="no"
+ADDITIONAL_DRIVERS="rk3128-hardware"
+ADDITIONAL_PACKAGES="a12-controls a12-free-games"
+# Keep swap-in latency low on Cortex-A7; optional codecs allow hardware comparisons.
+ZRAM_COMPRESSION_ALGO="lzo-rle"
+# Recompress idle zram pages with zstd while no game runs (B9, test 41).
+ZRAM_RECOMP_ALGO="zstd"
+ZRAM_SWAP_SIZE="256"
+SWAP_FILE_SIZE="0"
+SWAP_ENABLED_DEFAULT="yes"
+SQUASHFS_COMPRESSION="lz4"

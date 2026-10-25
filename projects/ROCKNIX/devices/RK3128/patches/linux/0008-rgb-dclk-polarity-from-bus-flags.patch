@@ -1,0 +1,31 @@
+Subject: [PATCH] drm/rockchip: drive the RGB clock edge from the panel bus flags
+
+Mainline always sets rgb_dclk_pol=1. The A12 panel samples on the rising
+edge (KNULLI pixelclk-active=1, rgb_dclk_pol=0); with the mainline edge
+the owner saw extra patterns in grey areas and colour transitions on a
+test pattern (2026-10-09, boot c80ba292). Pass the connector's bus flags
+through rockchip_rgb and derive the polarity from them.
+
+--- a/drivers/gpu/drm/rockchip/rockchip_rgb.c
++++ b/drivers/gpu/drm/rockchip/rockchip_rgb.c
+@@ -62,6 +62,7 @@
+ 
+ 	s->output_type = DRM_MODE_CONNECTOR_LVDS;
+ 	s->output_bpc = info->bpc;
++	s->bus_flags = info->bus_flags;
+ 
+ 	return 0;
+ }
+--- a/drivers/gpu/drm/rockchip/rockchip_drm_vop.c
++++ b/drivers/gpu/drm/rockchip/rockchip_drm_vop.c
+@@ -1407,7 +1407,9 @@
+ 
+ 	switch (s->output_type) {
+ 	case DRM_MODE_CONNECTOR_LVDS:
+-		VOP_REG_SET(vop, output, rgb_dclk_pol, 1);
++		/* Panels sampling on the rising edge (KNULLI pixelclk-active=1) need 0. */
++		VOP_REG_SET(vop, output, rgb_dclk_pol,
++			    !!(s->bus_flags & DRM_BUS_FLAG_PIXDATA_DRIVE_NEGEDGE));
+ 		VOP_REG_SET(vop, output, rgb_pin_pol, pin_pol);
+ 		VOP_REG_SET(vop, output, rgb_en, 1);
+ 		break;

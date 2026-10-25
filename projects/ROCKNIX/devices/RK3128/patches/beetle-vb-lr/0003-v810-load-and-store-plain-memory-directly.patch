@@ -1,0 +1,144 @@
+Subject: [PATCH] v810: load and store plain memory directly
+
+Every V810 load and store went through the MemRead/MemWrite handler
+pointers and their switch on the address region, also for work RAM,
+cartridge RAM and ROM, where the handlers only index an array. The six
+load/store opcodes now access those regions directly through a small
+per-region table (base and mirror mask) and fall back to the handlers
+elsewhere; ROM writes and a missing cartridge RAM still take the handler.
+Direct writes are counted, so the idle-loop skip still sees memory
+written. Output is bit-identical (frame hashes of five games, two anaglyph
+presets).
+
+diff --git a/mednafen/hw_cpu/v810/v810_cpu.h b/mednafen/hw_cpu/v810/v810_cpu.h
+index 5c86b33..27b3ce1 100644
+--- a/mednafen/hw_cpu/v810/v810_cpu.h
++++ b/mednafen/hw_cpu/v810/v810_cpu.h
+@@ -205,6 +205,17 @@ class V810
+  void SetPC(uint32);
+ 
+  uint32 GetPR(const unsigned int which);
++ /* Direct data access for plain memory regions (address bits 24-26), so
++  * loads and stores of RAM and ROM skip the handler call (A12/A13). base is
++  * NULL for regions that need the handler; writes to direct regions are
++  * counted in DataFastWrites. */
++ struct { uint8 *base; uint32 mask; } DataFastR[8], DataFastW[8];
++ uint32 DataFastWrites;
++ void SetDataFast(unsigned region, uint8 *base, uint32 mask, bool writable)
++ {
++  DataFastR[region & 7].base = base; DataFastR[region & 7].mask = mask;
++  DataFastW[region & 7].base = writable ? base : NULL; DataFastW[region & 7].mask = mask;
++ }
+  /* All program registers, for cheap comparison (A12 idle-loop skip). */
+  INLINE const uint32 *GetPRArray(void) const { return P_REG; }
+  void SetPR(const unsigned int which, uint32 value);
+diff --git a/mednafen/hw_cpu/v810/v810_oploop.inc b/mednafen/hw_cpu/v810/v810_oploop.inc
+index c0c7938..841c55b 100644
+--- a/mednafen/hw_cpu/v810/v810_oploop.inc
++++ b/mednafen/hw_cpu/v810/v810_oploop.inc
+@@ -1,3 +1,10 @@
++
++/* Plain-memory fast paths (DataFastR/DataFastW in v810_cpu.h). */
++#define FAST_REGION(A) (((A) >> 24) & 7)
++#define FAST_RD8(A) (DataFastR[FAST_REGION(A)].base ? DataFastR[FAST_REGION(A)].base[(A) & DataFastR[FAST_REGION(A)].mask] : MemRead8(timestamp, (A)))
++#define FAST_RD16(A) (DataFastR[FAST_REGION(A)].base ? LoadU16_LE((uint16 *)&DataFastR[FAST_REGION(A)].base[(A) & DataFastR[FAST_REGION(A)].mask]) : MemRead16(timestamp, (A)))
++#define FAST_WR8(A, V) do { const uint32 fa_ = (A); if (DataFastW[FAST_REGION(fa_)].base) { DataFastW[FAST_REGION(fa_)].base[fa_ & DataFastW[FAST_REGION(fa_)].mask] = (V); DataFastWrites++; } else MemWrite8(timestamp, fa_, (V)); } while (0)
++#define FAST_WR16(A, V) do { const uint32 fa_ = (A); if (DataFastW[FAST_REGION(fa_)].base) { StoreU16_LE((uint16 *)&DataFastW[FAST_REGION(fa_)].base[fa_ & DataFastW[FAST_REGION(fa_)].mask], (V)); DataFastWrites++; } else MemWrite16(timestamp, fa_, (V)); } while (0)
+ /* V810 Emulator
+  *
+  * Copyright (C) 2006 David Tucker
+@@ -560,7 +567,7 @@
+ 		        ADDCLOCK(1);
+ 			tmp2 = (sign_16(arg1)+P_REG[arg2])&0xFFFFFFFF;
+ 			
+-			SetPREG(arg3, sign_8(MemRead8(timestamp, tmp2)));
++			SetPREG(arg3, sign_8(FAST_RD8(tmp2)));
+ 
+ 			/*should be 3 clocks when executed alone, 2 when precedes another LD, or 1
+ 			 *when precedes an instruction with many clocks (I'm guessing FP, MUL, DIV, etc) */
+@@ -582,7 +589,7 @@
+ 	BEGIN_OP(LD_H);
+                         ADDCLOCK(1);
+ 			tmp2 = (sign_16(arg1)+P_REG[arg2]) & 0xFFFFFFFE;
+-		        SetPREG(arg3, sign_16(MemRead16(timestamp, tmp2)));
++		        SetPREG(arg3, sign_16(FAST_RD16(tmp2)));
+ 
+ 		        if(lastop >= 0)
+ 			{
+@@ -623,7 +630,7 @@
+ 			}
+ 			else
+ 			{
+-                         SetPREG(arg3, MemRead16(timestamp, tmp2) | (MemRead16(timestamp, tmp2 | 2) << 16));
++                         SetPREG(arg3, FAST_RD16(tmp2) | (FAST_RD16(tmp2 | 2) << 16));
+ 
+                          if(lastop >= 0)
+                          {
+@@ -643,7 +650,7 @@
+ 	/* ST.B */
+ 	BEGIN_OP(ST_B);
+              ADDCLOCK(1);
+-             MemWrite8(timestamp, sign_16(arg2)+P_REG[arg3], P_REG[arg1] & 0xFF);
++             FAST_WR8(sign_16(arg2)+P_REG[arg3], P_REG[arg1] & 0xFF);
+ 
+              if(lastop == LASTOP_ST)
+ 	     {
+@@ -656,7 +663,7 @@
+ 	BEGIN_OP(ST_H);
+              ADDCLOCK(1);
+ 
+-             MemWrite16(timestamp, (sign_16(arg2)+P_REG[arg3])&0xFFFFFFFE, P_REG[arg1] & 0xFFFF);
++             FAST_WR16((sign_16(arg2)+P_REG[arg3])&0xFFFFFFFE, P_REG[arg1] & 0xFFFF);
+ 
+              if(lastop == LASTOP_ST)
+ 	     {
+@@ -681,8 +688,8 @@
+ 	     }
+ 	     else
+ 	     {
+-              MemWrite16(timestamp, tmp2, P_REG[arg1] & 0xFFFF);
+-              MemWrite16(timestamp, tmp2 | 2, P_REG[arg1] >> 16);
++              FAST_WR16(tmp2, P_REG[arg1] & 0xFFFF);
++              FAST_WR16(tmp2 | 2, P_REG[arg1] >> 16);
+ 
+               if(lastop == LASTOP_ST)
+ 	      {
+diff --git a/libretro.cpp b/libretro.cpp
+index d67a213..8dfe0e2 100644
+--- a/libretro.cpp
++++ b/libretro.cpp
+@@ -251,7 +251,7 @@ static NO_INLINE uint16 ReadXPSTTS(v810_timestamp_t &timestamp, uint32 A)
+ 
+    /* Cheap checks first; the registers only when they pass. */
+    if (IdlePoll.valid && IdlePoll.pc == pc && IdlePoll.value == value &&
+-       IdlePoll.writes == MemWriteCount && !memcmp(IdlePoll.regs, regs, sizeof(IdlePoll.regs)))
++       IdlePoll.writes == MemWriteCount + VB_V810->DataFastWrites && !memcmp(IdlePoll.regs, regs, sizeof(IdlePoll.regs)))
+    {
+       const v810_timestamp_t period = timestamp - IdlePoll.ts;
+       v810_timestamp_t limit = VB_V810->GetEventNT();
+@@ -271,7 +271,7 @@ static NO_INLINE uint16 ReadXPSTTS(v810_timestamp_t &timestamp, uint32 A)
+    IdlePoll.valid  = true;
+    IdlePoll.pc     = pc;
+    IdlePoll.value  = value;
+-   IdlePoll.writes = MemWriteCount;
++   IdlePoll.writes = MemWriteCount + VB_V810->DataFastWrites;
+    IdlePoll.ts     = timestamp;
+    memcpy(IdlePoll.regs, regs, sizeof(IdlePoll.regs));
+    return value;
+@@ -1971,6 +1971,16 @@ static int Load(const uint8_t *data, size_t size)
+ 
+    VB_Power();
+ 
++   /* Loads and stores of WRAM, cartridge RAM and ROM go straight to memory
++    * (the handlers do nothing else for these regions). */
++   for (unsigned r = 0; r < 8; r++)
++      VB_V810->SetDataFast(r, NULL, 0, false);
++   VB_V810->DataFastWrites = 0;
++   VB_V810->SetDataFast(5, WRAM, 0xFFFF, true);
++   VB_V810->SetDataFast(7, GPROM, GPROM_Mask, false);
++   if (GPRAM)
++      VB_V810->SetDataFast(6, GPRAM, GPRAM_Mask, true);
++
+    MDFNMP_Init(32768, ((uint64)1 << 27) / 32768);
+    MDFNMP_AddRAM(65536, 5 << 24, WRAM);
+    if((GPRAM_Mask + 1) >= 32768)

@@ -12,7 +12,11 @@ PKG_LONGDESC="gameplaySP is a Gameboy Advance emulator for Playstation Portable"
 
 make_target() {
   if [ "${ARCH}" = "arm" ]; then
-    make platform=${DEVICE}
+    if [ "${DEVICE}" = "RK3128" ]; then
+      make platform=armv7-neon
+    else
+      make platform=${DEVICE}
+    fi
   else
     :
   fi

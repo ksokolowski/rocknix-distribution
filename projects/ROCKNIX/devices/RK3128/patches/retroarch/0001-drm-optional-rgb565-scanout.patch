@@ -1,0 +1,97 @@
+Subject: [PATCH] drm: optional RGB565 scanout (RETROARCH_KMS_RGB565=1)
+
+The KMS context always creates XRGB8888 GBM surfaces and framebuffers.
+On the Powkiddy A12 (RK3128, 16-bit DDR3, RGB666 panel) memory bandwidth
+is the bottleneck and the swap chain competes for a 32 MiB CMA pool that
+fills up in games. With RETROARCH_KMS_RGB565=1 the context picks a 5/6/5
+EGL config with GBM_FORMAT_RGB565 surfaces and 16-bit framebuffers,
+halving scanout and render-target traffic. Unset, behaviour is unchanged.
+
+--- a/gfx/drivers_context/drm_ctx.c
++++ b/gfx/drivers_context/drm_ctx.c
+@@ -207,13 +207,35 @@
+    return attr;
+ }
+ 
++/* Optional RGB565 scanout (RETROARCH_KMS_RGB565=1): halves scanout and
++ * render-target bandwidth and swap-chain memory on bandwidth-bound devices
++ * with 16/18-bit panels. Default stays XRGB8888. */
++static int drm_rgb565 = -1;
++
++static bool drm_use_rgb565(void)
++{
++   if (drm_rgb565 < 0)
++   {
++      const char *env = getenv("RETROARCH_KMS_RGB565");
++      drm_rgb565      = env && string_is_equal(env, "1");
++      if (drm_rgb565)
++         RARCH_LOG("[KMS] Using RGB565 scanout.\n");
++   }
++   return drm_rgb565;
++}
++
++static uint32_t drm_gbm_format(void)
++{
++   return drm_use_rgb565() ? GBM_FORMAT_RGB565 : GBM_FORMAT_XRGB8888;
++}
++
+ #ifdef HAVE_EGL
+ static bool gbm_choose_xrgb8888_cb(void *display_data, EGLDisplay dpy, EGLConfig config)
+ {
+    EGLint r, g, b, id;
+    (void)display_data;
+ 
+-   /* Makes sure we have 8 bit color. */
++   /* Makes sure we have 8 bit color, or 5/6/5 for RGB565 scanout. */
+    if (!egl_get_config_attrib(dpy, config, EGL_RED_SIZE, &r))
+       return false;
+    if (!egl_get_config_attrib(dpy, config, EGL_GREEN_SIZE, &g))
+@@ -221,13 +243,18 @@
+    if (!egl_get_config_attrib(dpy, config, EGL_BLUE_SIZE, &b))
+       return false;
+ 
+-   if (r != 8 || g != 8 || b != 8)
++   if (drm_use_rgb565())
++   {
++      if (r != 5 || g != 6 || b != 5)
++         return false;
++   }
++   else if (r != 8 || g != 8 || b != 8)
+       return false;
+ 
+    if (!egl_get_config_attrib(dpy, config, EGL_NATIVE_VISUAL_ID, &id))
+       return false;
+ 
+-   return id == GBM_FORMAT_XRGB8888;
++   return id == (EGLint)drm_gbm_format();
+ }
+ 
+ #define DRM_EGL_ATTRIBS_BASE \
+@@ -491,7 +518,8 @@
+    RARCH_LOG("[KMS] New FB: %ux%u (stride: %u).\n",
+          width, height, stride);
+ 
+-   ret = drmModeAddFB(g_drm_fd, width, height, 24, 32,
++   ret = drmModeAddFB(g_drm_fd, width, height,
++         drm_use_rgb565() ? 16 : 24, drm_use_rgb565() ? 16 : 32,
+          stride, handle, &fb->fb_id);
+    if (ret < 0)
+       goto error;
+@@ -608,7 +636,7 @@
+             drm->gbm_dev,
+             drm->fb_width,
+             drm->fb_height,
+-            GBM_FORMAT_XRGB8888,
++            drm_gbm_format(),
+             GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING);
+ 
+       if (!drm->gbm_surface)
+@@ -926,7 +954,7 @@
+          drm->gbm_dev,
+          drm->fb_width,
+          drm->fb_height,
+-         GBM_FORMAT_XRGB8888,
++         drm_gbm_format(),
+          GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING);
+ 
+    if (!drm->gbm_surface)

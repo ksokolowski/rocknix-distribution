@@ -1,0 +1,36 @@
+Subject: [PATCH] dmaengine: pl330: drop only the runtime PM reference a channel holds
+
+pl330_tasklet() dropped a runtime PM reference whenever the channel's
+work list was empty, without checking that the channel still held one.
+pl330_terminate_all() drops the reference too (power_down = pch->active)
+and clears pch->active. If a completion had scheduled the tasklet before
+a client terminated the channel, the tasklet then ran with an empty work
+list and dropped the reference a second time: "Runtime PM usage count
+underflow", after which the controller could autosuspend while in use.
+
+Powkiddy A12 (RK3128, dw_mmc with external PL330 DMA, TEST_LOG tests 22
+and 27): under combined SD and USB/Wi-Fi load the dw_mmc error path
+terminated the channel; both pstore captures show the underflow, then
+"pl330_update:1678 Unexpected!", "Failed to get external DMA channel"
+and a NULL dereference in dw_mci_edmac_{start,stop}_dma. The A12 runs
+the SD card in PIO since; this is a candidate fix to restore DMA.
+
+Take power_down from pch->active, as pl330_terminate_all() does, so each
+reference taken in pl330_issue_pending() is dropped exactly once.
+
+--- a/drivers/dma/pl330.c
++++ b/drivers/dma/pl330.c
+@@ -2089,7 +2089,12 @@ static void pl330_tasklet(struct tasklet_struct *t)
+ 		spin_lock(&pch->thread->dmac->lock);
+ 		_stop(pch->thread);
+ 		spin_unlock(&pch->thread->dmac->lock);
+-		power_down = true;
++		/*
++		 * Drop the runtime PM reference only if this channel still
++		 * holds it: pl330_terminate_all() may already have dropped it
++		 * while this tasklet was scheduled.
++		 */
++		power_down = pch->active;
+ 		pch->active = false;
+ 	} else {
+ 		/* Make sure the PL330 Channel thread is active */

@@ -1,0 +1,172 @@
+Subject: [PATCH] Skip idle XPSTTS polling loops in whole loop periods
+
+Games wait for the VIP by reading XPSTTS in a tight loop: Virtual Boy
+Wario Land read it 87 million times in 3000 frames, about 17 % of a
+Cortex-A7's time (Powkiddy A12/A13). When the same instruction reads the
+same value again, with every program register as before and no memory
+written in between, the loop has no effect but time. Advance the clock by
+whole loop periods, staying before the next event and before XPSTTS's
+SBOUT bit can change, so the loop reads the same values at the same cycle
+phase as it would have. The remembered poll is dropped when timestamps are
+rebased each frame, on power and on state load. The registers are
+compared, through an inline accessor, only after the cheap checks pass. Output is bit-identical
+(frame hashes of five games, two anaglyph presets); Wario Land skips 63
+million of its loop iterations.
+
+diff --git a/mednafen/vb/vip.c b/mednafen/vb/vip.c
+index 229351c..8039308 100644
+--- a/mednafen/vb/vip.c
++++ b/mednafen/vb/vip.c
+@@ -704,6 +704,13 @@ uint8 VIP_Read8(int32 timestamp, uint32 A)
+    return 0;
+ }
+ 
++/* The latest timestamp up to which XPSTTS cannot change without an event:
++ * its SBOUT bit flips at SBOUT_InactiveTime (idle-loop skip, libretro.cpp). */
++int32 VIP_PollLimit(int32 timestamp)
++{
++   return timestamp < SBOUT_InactiveTime ? SBOUT_InactiveTime : INT32_MAX;
++}
++
+ uint16 VIP_Read16(int32 timestamp, uint32 A)
+ {
+    switch(A >> 16)
+diff --git a/mednafen/vb/vip.h b/mednafen/vb/vip.h
+index 56f9d3f..b55a945 100644
+--- a/mednafen/vb/vip.h
++++ b/mednafen/vb/vip.h
+@@ -55,6 +55,7 @@ void VIP_ResetTS(void);
+ 
+ void VIP_StartFrame(EmulateSpecStruct *espec);
+ void VIP_FlushOutput(void);
++int32 VIP_PollLimit(int32 timestamp);
+ 
+ uint8 VIP_Read8(v810_timestamp_t timestamp, uint32 A);
+ uint16 VIP_Read16(v810_timestamp_t timestamp, uint32 A);
+diff --git a/mednafen/hw_cpu/v810/v810_cpu.h b/mednafen/hw_cpu/v810/v810_cpu.h
+index bdcb7fd..5c86b33 100644
+--- a/mednafen/hw_cpu/v810/v810_cpu.h
++++ b/mednafen/hw_cpu/v810/v810_cpu.h
+@@ -205,6 +205,8 @@ class V810
+  void SetPC(uint32);
+ 
+  uint32 GetPR(const unsigned int which);
++ /* All program registers, for cheap comparison (A12 idle-loop skip). */
++ INLINE const uint32 *GetPRArray(void) const { return P_REG; }
+  void SetPR(const unsigned int which, uint32 value);
+ 
+  uint32 GetSR(const unsigned int which);
+diff --git a/libretro.cpp b/libretro.cpp
+index 4e0a28d..d67a213 100644
+--- a/libretro.cpp
++++ b/libretro.cpp
+@@ -220,6 +220,63 @@ uint8 MDFN_FASTCALL MemRead8(v810_timestamp_t &timestamp, uint32 A)
+    return 0;
+ }
+ 
++/* Idle-loop skip (Powkiddy A12/A13). Games wait for the VIP by reading
++ * XPSTTS in a tight loop: Wario Land read it 29 000 times a frame, about
++ * 17 % of a Cortex-A7's time. When the same instruction reads the same
++ * value again, with every program register as before and no memory written
++ * in between, the loop has no effect but time. Advance the clock by whole
++ * loop periods, staying before the next event and the next SBOUT change,
++ * so the loop reads the same values at the same cycle phase as it would
++ * have: emulation is unchanged, the host skips the iterations. */
++static uint32 MemWriteCount;
++static struct
++{
++   bool valid;
++   uint32 pc, writes, regs[32];
++   uint16 value;
++   v810_timestamp_t ts;
++} IdlePoll;
++
++static void IdlePollReset(void)
++{
++   IdlePoll.valid = false;
++}
++
++/* Out of line: inlined, it makes MemRead16 (every memory read) heavier. */
++static NO_INLINE uint16 ReadXPSTTS(v810_timestamp_t &timestamp, uint32 A)
++{
++   const uint16 value = VIP_Read16(timestamp, A);
++   const uint32 pc    = VB_V810->GetPC();
++   const uint32 *regs = VB_V810->GetPRArray();
++
++   /* Cheap checks first; the registers only when they pass. */
++   if (IdlePoll.valid && IdlePoll.pc == pc && IdlePoll.value == value &&
++       IdlePoll.writes == MemWriteCount && !memcmp(IdlePoll.regs, regs, sizeof(IdlePoll.regs)))
++   {
++      const v810_timestamp_t period = timestamp - IdlePoll.ts;
++      v810_timestamp_t limit = VB_V810->GetEventNT();
++      const int32 sbout = VIP_PollLimit(timestamp);
++
++      if (sbout < limit)
++         limit = sbout;
++      if (period > 0 && period < 256 && limit > timestamp)
++      {
++         const int32 skip = (limit - 1 - timestamp) / period;
++         if (skip > 0)
++            timestamp += skip * period;
++      }
++      IdlePoll.ts = timestamp;	/* registers, pc, value: unchanged */
++      return value;
++   }
++   IdlePoll.valid  = true;
++   IdlePoll.pc     = pc;
++   IdlePoll.value  = value;
++   IdlePoll.writes = MemWriteCount;
++   IdlePoll.ts     = timestamp;
++   memcpy(IdlePoll.regs, regs, sizeof(IdlePoll.regs));
++   return value;
++}
++
+ uint16 MDFN_FASTCALL MemRead16(v810_timestamp_t &timestamp, uint32 A)
+ {
+    A &= (1 << 27) - 1;
+@@ -227,6 +284,8 @@ uint16 MDFN_FASTCALL MemRead16(v810_timestamp_t &timestamp, uint32 A)
+    switch(A >> 24)
+    {
+       case 0:
++         if ((A & 0x7FFFF) == 0x5F840)
++            return ReadXPSTTS(timestamp, A);
+          return VIP_Read16(timestamp, A);
+       case 2:
+          return HWCTRL_Read(timestamp, A);
+@@ -250,6 +309,7 @@ uint16 MDFN_FASTCALL MemRead16(v810_timestamp_t &timestamp, uint32 A)
+ 
+ void MDFN_FASTCALL MemWrite8(v810_timestamp_t &timestamp, uint32 A, uint8 V)
+ {
++   MemWriteCount++;
+    A &= (1 << 27) - 1;
+ 
+    switch(A >> 24)
+@@ -281,6 +341,7 @@ void MDFN_FASTCALL MemWrite8(v810_timestamp_t &timestamp, uint32 A, uint8 V)
+ 
+ void MDFN_FASTCALL MemWrite16(v810_timestamp_t &timestamp, uint32 A, uint16 V)
+ {
++   MemWriteCount++;
+    A &= (1 << 27) - 1;
+ 
+    switch(A >> 24)
+@@ -390,6 +451,7 @@ static void ForceEventUpdates(const v810_timestamp_t timestamp)
+ 
+ static void VB_Power(void)
+ {
++   IdlePollReset();
+    memset(WRAM, 0, 65536);
+ 
+    VIP_Power();
+@@ -1988,10 +2050,12 @@ static void Emulate(EmulateSpecStruct *espec, int16_t *sound_buf)
+    RebaseTS(v810_timestamp);
+ 
+    VB_V810->ResetTS(0);
++   IdlePollReset();	/* timestamps were rebased */
+ }
+ 
+ extern "C" int StateAction(StateMem *sm, int load, int data_only)
+ {
++   IdlePollReset();
+    const v810_timestamp_t timestamp = VB_V810->v810_timestamp;
+    int ret = 1;
+ 

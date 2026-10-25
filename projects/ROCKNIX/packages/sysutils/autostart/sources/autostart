@@ -44,7 +44,15 @@ fi
 
 ### Start the automount service
 tocon "Starting storage services..."
-systemctl start rocknix-automount
+# RK3128: mount the games while the common scripts run (none of them use
+# /storage/roms); device and custom scripts below wait for it, ES orders
+# after it anyway.
+if [ "${HW_DEVICE}" = "RK3128" ]
+then
+  systemctl start --no-block rocknix-automount
+else
+  systemctl start rocknix-automount
+fi
 
 ### Run common start scripts
 for script in /usr/lib/autostart/common/*
@@ -53,6 +61,11 @@ do
   ${script} 2>&1 >>${BOOTLOG}
 done
 wait
+
+if [ "${HW_DEVICE}" = "RK3128" ]
+then
+  systemctl start rocknix-automount
+fi
 
 ### Run device start scripts
 if [ -d "/usr/lib/autostart/${HW_DEVICE}" ]

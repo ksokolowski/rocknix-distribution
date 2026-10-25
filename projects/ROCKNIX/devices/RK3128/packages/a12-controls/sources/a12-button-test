@@ -1,0 +1,75 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+# a12-button-test [SECONDS]: press buttons on the A12 and see, for each one,
+# its label (device tree = printed label), key code, joystick button number
+# and what RetroArch (stick.cfg) and ES (es_input.cfg) map it to. ES maps by
+# label, RetroArch A/B by position (printed A = RetroPad B, test 73); any
+# other mapping is flagged (TEST_LOG test 62). Run over SSH.
+root=${A12_ROOT:-}
+dt="$root/proc/device-tree/stick"
+joypad=${A12_JOYPAD:-/tmp/joypads/stick.cfg}
+esin=${A12_ES_INPUT:-/storage/.config/emulationstation/es_input.cfg}
+secs=${1:-30}
+dev=${A12_BUTTON_EVENT_DEV:-}
+if [ -z "$dev" ]; then
+  for n in /sys/class/input/event*/device/name; do
+    [ "$(cat "$n" 2>/dev/null)" = stick ] && dev=/dev/input/$(basename "${n%/device/name}")
+  done
+fi
+[ -n "$dev" ] || { echo "a12-button-test: no 'stick' input device" >&2; exit 1; }
+
+# "code label" per key, from the device tree (linux,code is a big-endian u32).
+table=$(for node in "$dt"/*/; do
+  [ -f "${node}linux,code" ] || continue
+  code=$(od -An -tu1 "${node}linux,code" | awk '{ print $1 * 16777216 + $2 * 65536 + $3 * 256 + $4 }')
+  echo "$code $(tr -d '\0' < "${node}label")"
+done | sort -n)
+
+echo "Press buttons for ${secs} s (Ctrl+C stops)."
+timeout "$secs" evtest "$dev" 2>/dev/null | awk -v table="$table" -v joypad="$joypad" -v esin="$esin" '
+BEGIN {
+  # Joystick button numbers follow the key codes in ascending order (BTN_* only).
+  n = split(table, rows, "\n")
+  for (i = 1; i <= n; i++) {
+    split(rows[i], f, " ")
+    label[f[1]] = f[2]
+    if (f[1] >= 256) btn[f[1]] = nbtn++
+  }
+  while ((getline line < joypad) > 0)
+    if (line ~ /^input_[a-z_]+_btn = "[0-9]+"/) {
+      name = line; sub(/^input_/, "", name); sub(/_btn = .*/, "", name)
+      v = line; sub(/^[^"]*"/, "", v); sub(/".*/, "", v)
+      ra[v] = name
+    }
+  text = ""
+  while ((getline line < esin) > 0) text = text line "\n"
+  s = index(text, "deviceName=\"stick\"")
+  if (s) {
+    text = substr(text, s)
+    e = index(text, "</inputConfig>"); if (e) text = substr(text, 1, e)
+    while (match(text, /<input name="[^"]+"[^>]*id="[0-9]+"/)) {
+      m = substr(text, RSTART, RLENGTH); text = substr(text, RSTART + RLENGTH)
+      nm = m; sub(/^<input name="/, "", nm); sub(/".*/, "", nm)
+      id = m; sub(/.*id="/, "", id); sub(/".*/, "", id)
+      es[id] = nm
+    }
+  }
+  # RetroArch maps A/B by position (printed A = RetroPad B), ES by label.
+  ra_for["back"] = "enable_hotkey"; ra_for["a"] = "b"; ra_for["b"] = "a"
+  es_for["l"] = "pageup"; es_for["r"] = "pagedown"; es_for["back"] = "hotkeyenable"
+}
+/EV_KEY/ && / value 1$/ {
+  code = ""
+  for (i = 1; i < NF; i++) if ($i == "code") code = $(i + 1) + 0
+  if (code == "") next
+  lab = (code in label) ? label[code] : "?"
+  if (!(code in btn)) { printf "%-12s code %d\n", lab, code; fflush(); next }
+  b = btn[code]
+  r = (b in ra) ? ra[b] : "-"
+  x = (b in es) ? es[b] : "-"
+  want_r = (lab in ra_for) ? ra_for[lab] : lab
+  want_e = (lab in es_for) ? es_for[lab] : lab
+  flag = ((r != "-" && r != want_r) || (x != "-" && x != want_e)) ? "  <-- check" : ""
+  printf "%-12s code %d  btn %d  RetroArch: %s  ES: %s%s\n", lab, code, b, r, x, flag
+  fflush()
+}'

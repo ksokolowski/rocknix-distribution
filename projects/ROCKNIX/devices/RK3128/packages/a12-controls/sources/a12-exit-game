@@ -1,0 +1,19 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-or-later
+
+# Use the same launcher-owned process list as ROCKNIX's input_sense.
+# The frontend's idle marker must not turn this shortcut into an ES restart.
+[ -r /tmp/.process-kill-data ] || exit 0
+read -r -a targets < /tmp/.process-kill-data || exit 0
+signal=-TERM
+for target in "${targets[@]}"; do
+  case "${target}" in
+    -9) signal=-KILL ;;
+    emulationstation) exit 0 ;;
+    -*|*[!a-zA-Z0-9_.-]*|'') exit 1 ;;
+  esac
+done
+for target in "${targets[@]}"; do
+  [ "${target}" = -9 ] && continue
+  killall "${signal}" -- "${target}" 2>/dev/null || :
+done

@@ -1,0 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0+
+#include "rk3128-powkiddy-a12-rev-a-u-boot.dtsi"
+
+&vop {
+	/* Bound before relocation so the video uclass reserves the framebuffer. */
+	bootph-all;
+};

@@ -1,0 +1,405 @@
+Subject: [PATCH] drm/panel, phy: build the Powkiddy A12 panel and TTL PHY in-tree
+
+Moved from the out-of-tree rk3128-hardware package so they can be built
+in: as modules they loaded from SYSTEM via udev at about 18 s, so
+/dev/fb0 did not exist while the initramfs splash ran. Sources unchanged
+(panel timing from RK3128-CFW; TTL PHY adapted from the Rockchip vendor
+driver, GPLv2 notice retained). Object names keep panel_a12/a12_ttl_phy.
+
+diff -ruN a/drivers/gpu/drm/panel/Kconfig b/drivers/gpu/drm/panel/Kconfig
+--- a/drivers/gpu/drm/panel/Kconfig
++++ b/drivers/gpu/drm/panel/Kconfig
+@@ -1297,4 +1297,12 @@
+ 	  Say Y here if you want to enable support for the Xinpeng
+ 	  XPP055C272 controller for 720x1280 LCD panels with MIPI/RGB/SPI
+ 	  system interfaces.
++config DRM_PANEL_POWKIDDY_A12
++	tristate "Powkiddy A12 revision A RGB panel"
++	depends on OF && DRM_PANEL && BACKLIGHT_CLASS_DEVICE
++	depends on GENERIC_PHY
++	help
++	  Say Y here to enable the Powkiddy A12 revision A 1024x600 RGB666
++	  panel on the RK3128 VOP, with its power sequence and TTL video PHY.
++
+ endmenu
+diff -ruN a/drivers/gpu/drm/panel/Makefile b/drivers/gpu/drm/panel/Makefile
+--- a/drivers/gpu/drm/panel/Makefile
++++ b/drivers/gpu/drm/panel/Makefile
+@@ -128,3 +128,4 @@
+ obj-$(CONFIG_DRM_PANEL_VISIONOX_R66451) += panel-visionox-r66451.o
+ obj-$(CONFIG_DRM_PANEL_WIDECHIPS_WS2401) += panel-widechips-ws2401.o
+ obj-$(CONFIG_DRM_PANEL_XINPENG_XPP055C272) += panel-xinpeng-xpp055c272.o
++obj-$(CONFIG_DRM_PANEL_POWKIDDY_A12) += panel-a12.o
+diff -ruN a/drivers/gpu/drm/panel/panel-a12.c b/drivers/gpu/drm/panel/panel-a12.c
+--- a/drivers/gpu/drm/panel/panel-a12.c
++++ b/drivers/gpu/drm/panel/panel-a12.c
+@@ -0,0 +1,190 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++/* A12 rev-ab timing and sequencing from RK3128-CFW's panel-simple. */
++#include <linux/delay.h>
++#include <linux/gpio/consumer.h>
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/platform_device.h>
++#include <linux/phy/phy.h>
++#include <linux/regulator/consumer.h>
++#include <drm/drm_connector.h>
++#include <drm/drm_modes.h>
++#include <drm/drm_panel.h>
++#include <linux/media-bus-format.h>
++
++static bool refresh_60hz;
++module_param(refresh_60hz, bool, 0444);
++MODULE_PARM_DESC(refresh_60hz, "Prefer experimental 60 Hz timing (default: native timing)");
++
++struct a12_panel {
++	struct drm_panel panel;
++	struct regulator *supply;
++	struct phy *phy;
++	struct gpio_desc *enable, *reset;
++	bool prepared;
++};
++
++static struct a12_panel *to_a12(struct drm_panel *panel)
++{
++	return container_of(panel, struct a12_panel, panel);
++}
++
++static int a12_prepare(struct drm_panel *panel)
++{
++	struct a12_panel *p = to_a12(panel);
++	int ret;
++
++	if (p->prepared)
++		return 0;
++	ret = regulator_enable(p->supply);
++	if (ret)
++		return ret;
++	ret = phy_power_on(p->phy);
++	if (ret) {
++		regulator_disable(p->supply);
++		return ret;
++	}
++	gpiod_set_value_cansleep(p->enable, 1);
++	msleep(100);
++	gpiod_set_value_cansleep(p->reset, 1);
++	msleep(60);
++	gpiod_set_value_cansleep(p->reset, 0);
++	msleep(1000);
++	p->prepared = true;
++	return 0;
++}
++
++static int a12_enable(struct drm_panel *panel)
++{
++	msleep(150);
++	return 0;
++}
++
++static int a12_unprepare(struct drm_panel *panel)
++{
++	struct a12_panel *p = to_a12(panel);
++
++	if (!p->prepared)
++		return 0;
++	gpiod_set_value_cansleep(p->reset, 1);
++	gpiod_set_value_cansleep(p->enable, 0);
++	regulator_disable(p->supply);
++	phy_power_off(p->phy);
++	msleep(2000);
++	p->prepared = false;
++	return 0;
++}
++
++static int a12_get_modes(struct drm_panel *panel, struct drm_connector *connector)
++{
++	static const struct drm_display_mode native = {
++		.clock = 75200,
++		.hdisplay = 1024, .hsync_start = 1184, .hsync_end = 1194, .htotal = 1354,
++		.vdisplay = 600, .vsync_start = 612, .vsync_end = 622, .vtotal = 645,
++		.flags = DRM_MODE_FLAG_NHSYNC | DRM_MODE_FLAG_NVSYNC,
++		.type = DRM_MODE_TYPE_DRIVER | DRM_MODE_TYPE_PREFERRED,
++	};
++	/* 594 MHz / 11; panel acceptance still needs a revision A hardware test. */
++	static const struct drm_display_mode experimental = {
++		.clock = 54000,
++		.hdisplay = 1024, .hsync_start = 1184, .hsync_end = 1194, .htotal = 1354,
++		.vdisplay = 600, .vsync_start = 612, .vsync_end = 622, .vtotal = 664,
++		.flags = DRM_MODE_FLAG_NHSYNC | DRM_MODE_FLAG_NVSYNC,
++		.type = DRM_MODE_TYPE_DRIVER | DRM_MODE_TYPE_PREFERRED,
++	};
++	struct drm_display_mode *mode;
++	u32 format = MEDIA_BUS_FMT_RGB666_1X18;
++
++	if (refresh_60hz) {
++		mode = drm_mode_duplicate(connector->dev, &experimental);
++		if (!mode)
++			return -ENOMEM;
++		drm_mode_set_name(mode);
++		drm_mode_probed_add(connector, mode);
++	}
++	mode = drm_mode_duplicate(connector->dev, &native);
++	if (!mode)
++		return -ENOMEM;
++	if (refresh_60hz)
++		mode->type &= ~DRM_MODE_TYPE_PREFERRED;
++	drm_mode_set_name(mode);
++	drm_mode_probed_add(connector, mode);
++	connector->display_info.width_mm = 154;
++	connector->display_info.height_mm = 86;
++	connector->display_info.bpc = 6;
++	connector->display_info.bus_flags = DRM_BUS_FLAG_DE_LOW |
++		DRM_BUS_FLAG_PIXDATA_DRIVE_POSEDGE;
++	drm_display_info_set_bus_formats(&connector->display_info, &format, 1);
++	return refresh_60hz ? 2 : 1;
++}
++
++static const struct drm_panel_funcs a12_panel_funcs = {
++	.prepare = a12_prepare,
++	.enable = a12_enable,
++	.unprepare = a12_unprepare,
++	.get_modes = a12_get_modes,
++};
++
++static int a12_panel_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct a12_panel *p;
++	int ret;
++
++	p = devm_kzalloc(dev, sizeof(*p), GFP_KERNEL);
++	if (!p)
++		return -ENOMEM;
++	p->supply = devm_regulator_get(dev, "power");
++	if (IS_ERR(p->supply))
++		return dev_err_probe(dev, PTR_ERR(p->supply), "panel supply\n");
++	p->phy = devm_phy_get(dev, "rgb");
++	if (IS_ERR(p->phy))
++		return dev_err_probe(dev, PTR_ERR(p->phy), "panel TTL PHY\n");
++	p->enable = devm_gpiod_get(dev, "enable", GPIOD_OUT_LOW);
++	if (IS_ERR(p->enable))
++		return dev_err_probe(dev, PTR_ERR(p->enable), "panel enable GPIO\n");
++	p->reset = devm_gpiod_get(dev, "reset", GPIOD_OUT_HIGH);
++	if (IS_ERR(p->reset))
++		return dev_err_probe(dev, PTR_ERR(p->reset), "panel reset GPIO\n");
++	drm_panel_init(&p->panel, dev, &a12_panel_funcs, DRM_MODE_CONNECTOR_DPI);
++	ret = drm_panel_of_backlight(&p->panel);
++	if (ret)
++		return ret;
++	platform_set_drvdata(pdev, p);
++	drm_panel_add(&p->panel);
++	return 0;
++}
++
++static void a12_panel_remove(struct platform_device *pdev)
++{
++	struct a12_panel *p = platform_get_drvdata(pdev);
++
++	drm_panel_remove(&p->panel);
++	drm_panel_disable(&p->panel);
++	a12_unprepare(&p->panel);
++}
++
++static void a12_panel_shutdown(struct platform_device *pdev)
++{
++	struct a12_panel *p = platform_get_drvdata(pdev);
++
++	drm_panel_disable(&p->panel);
++	a12_unprepare(&p->panel);
++}
++
++static const struct of_device_id a12_panel_match[] = {
++	{ .compatible = "powkiddy,a12-rev-a-panel" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, a12_panel_match);
++
++static struct platform_driver a12_panel_driver = {
++	.probe = a12_panel_probe,
++	.remove = a12_panel_remove,
++	.shutdown = a12_panel_shutdown,
++	.driver = { .name = "panel-a12", .of_match_table = a12_panel_match },
++};
++module_platform_driver(a12_panel_driver);
++MODULE_LICENSE("GPL");
++
++MODULE_DESCRIPTION("Powkiddy A12 revision A RGB panel");
+diff -ruN a/drivers/phy/rockchip/a12-ttl-phy.c b/drivers/phy/rockchip/a12-ttl-phy.c
+--- a/drivers/phy/rockchip/a12-ttl-phy.c
++++ b/drivers/phy/rockchip/a12-ttl-phy.c
+@@ -0,0 +1,150 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Copyright (c) 2018 Rockchip Electronics Co. Ltd.
++ * Author: Wyon Bi <bivvy.bi@rock-chips.com>
++ *
++ * Fixed TTL path adapted from KNULLI's phy-rockchip-inno-video-combo-phy.c
++ * (local reference 72498e26). The mainline RK3128 DSI PHY lacks TTL support.
++ */
++#include <linux/clk.h>
++#include <linux/delay.h>
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/phy/phy.h>
++#include <linux/platform_device.h>
++#include <linux/pm_runtime.h>
++#include <linux/regmap.h>
++
++struct a12_ttl_phy {
++	struct device *dev;
++	struct regmap *phy, *host;
++	struct clk_bulk_data clocks[2];
++};
++
++/* Vendor PHY addresses are ((register part << 5) | index) << 2. */
++#define ANALOG0		0x000
++#define ANALOG1		0x004
++#define LVDS_RESET	0x380
++#define LVDS_ENABLE	0x384
++#define LVDS_MODE	0x38c
++#define LVDS_POWER	0x3ac
++#define DSI_PHY_RSTZ	0x0a0
++
++static int a12_ttl_power_on(struct phy *phy)
++{
++	struct a12_ttl_phy *p = phy_get_drvdata(phy);
++	int ret;
++
++	ret = pm_runtime_resume_and_get(p->dev);
++	if (ret < 0)
++		return ret;
++	ret = clk_bulk_prepare_enable(ARRAY_SIZE(p->clocks), p->clocks);
++	if (ret) {
++		pm_runtime_put(p->dev);
++		return ret;
++	}
++
++	/* Power the bandgap and analog block, then select the TTL output. */
++	regmap_update_bits(p->phy, ANALOG0, BIT(7) | GENMASK(1, 0), 1);
++	regmap_update_bits(p->phy, LVDS_MODE, GENMASK(2, 0), BIT(2));
++	regmap_update_bits(p->phy, LVDS_RESET, BIT(2), 0);
++	udelay(1);
++	regmap_update_bits(p->phy, LVDS_RESET, BIT(2), BIT(2));
++	regmap_update_bits(p->phy, LVDS_ENABLE, BIT(7), BIT(7));
++	regmap_update_bits(p->phy, LVDS_POWER, GENMASK(7, 3), GENMASK(7, 3));
++	regmap_update_bits(p->host, DSI_PHY_RSTZ, BIT(2), BIT(2));
++	dev_info(p->dev, "A12 TTL output enabled\n");
++	return 0;
++}
++
++static int a12_ttl_power_off(struct phy *phy)
++{
++	struct a12_ttl_phy *p = phy_get_drvdata(phy);
++
++	regmap_update_bits(p->phy, ANALOG0, GENMASK(6, 2), 0);
++	regmap_update_bits(p->phy, ANALOG1, GENMASK(1, 0), GENMASK(1, 0));
++	regmap_update_bits(p->phy, ANALOG0, BIT(7) | GENMASK(1, 0), BIT(7) | 2);
++	regmap_update_bits(p->phy, LVDS_POWER, GENMASK(7, 3), 0);
++	regmap_update_bits(p->phy, LVDS_ENABLE, BIT(7), 0);
++	regmap_update_bits(p->phy, LVDS_POWER, BIT(2) | BIT(0), BIT(2) | BIT(0));
++	clk_bulk_disable_unprepare(ARRAY_SIZE(p->clocks), p->clocks);
++	pm_runtime_put(p->dev);
++	return 0;
++}
++
++static const struct phy_ops a12_ttl_ops = {
++	.power_on = a12_ttl_power_on,
++	.power_off = a12_ttl_power_off,
++	.owner = THIS_MODULE,
++};
++
++static const struct regmap_config a12_ttl_regmap = {
++	.name = "a12-ttl",
++	.reg_bits = 32,
++	.val_bits = 32,
++	.reg_stride = 4,
++	.max_register = LVDS_POWER,
++};
++
++static const struct regmap_config a12_ttl_host_regmap = {
++	.name = "a12-ttl-host",
++	.reg_bits = 32,
++	.val_bits = 32,
++	.reg_stride = 4,
++	.max_register = DSI_PHY_RSTZ,
++};
++
++static int a12_ttl_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct a12_ttl_phy *p;
++	struct phy *phy;
++	struct phy_provider *provider;
++	void __iomem *base;
++	int ret;
++
++	p = devm_kzalloc(dev, sizeof(*p), GFP_KERNEL);
++	if (!p)
++		return -ENOMEM;
++	p->dev = dev;
++	base = devm_platform_ioremap_resource(pdev, 0);
++	if (IS_ERR(base))
++		return PTR_ERR(base);
++	p->phy = devm_regmap_init_mmio(dev, base, &a12_ttl_regmap);
++	if (IS_ERR(p->phy))
++		return PTR_ERR(p->phy);
++	base = devm_platform_ioremap_resource(pdev, 1);
++	if (IS_ERR(base))
++		return PTR_ERR(base);
++	p->host = devm_regmap_init_mmio(dev, base, &a12_ttl_host_regmap);
++	if (IS_ERR(p->host))
++		return PTR_ERR(p->host);
++	p->clocks[0].id = "pclk";
++	p->clocks[1].id = "host";
++	ret = devm_clk_bulk_get(dev, ARRAY_SIZE(p->clocks), p->clocks);
++	if (ret)
++		return dev_err_probe(dev, ret, "TTL clocks\n");
++	phy = devm_phy_create(dev, NULL, &a12_ttl_ops);
++	if (IS_ERR(phy))
++		return PTR_ERR(phy);
++	phy_set_drvdata(phy, p);
++	provider = devm_of_phy_provider_register(dev, of_phy_simple_xlate);
++	if (IS_ERR(provider))
++		return PTR_ERR(provider);
++	return devm_pm_runtime_enable(dev);
++}
++
++static const struct of_device_id a12_ttl_match[] = {
++	{ .compatible = "powkiddy,a12-rev-a-ttl-phy" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, a12_ttl_match);
++
++static struct platform_driver a12_ttl_driver = {
++	.probe = a12_ttl_probe,
++	.driver = { .name = "a12-ttl-phy", .of_match_table = a12_ttl_match },
++};
++module_platform_driver(a12_ttl_driver);
++MODULE_DESCRIPTION("Powkiddy A12 revision A TTL video PHY");
++MODULE_AUTHOR("Wyon Bi <bivvy.bi@rock-chips.com>");
++MODULE_LICENSE("GPL v2");
+diff -ruN a/drivers/phy/rockchip/Kconfig b/drivers/phy/rockchip/Kconfig
+--- a/drivers/phy/rockchip/Kconfig
++++ b/drivers/phy/rockchip/Kconfig
+@@ -144,3 +144,13 @@
+ 
+ 	  To compile this driver as a module, choose M here: the module
+ 	  will be called phy-rockchip-usbdp
++
++config PHY_ROCKCHIP_A12_TTL
++	tristate "Powkiddy A12 RK3128 video PHY TTL mode"
++	depends on OF && (ARCH_ROCKCHIP || COMPILE_TEST)
++	select GENERIC_PHY
++	select REGMAP_MMIO
++	help
++	  TTL (parallel RGB) power sequence of the RK3128 video combo PHY used
++	  by the Powkiddy A12 revision A panel, adapted from the Rockchip
++	  vendor driver.
+diff -ruN a/drivers/phy/rockchip/Makefile b/drivers/phy/rockchip/Makefile
+--- a/drivers/phy/rockchip/Makefile
++++ b/drivers/phy/rockchip/Makefile
+@@ -14,3 +14,4 @@
+ obj-$(CONFIG_PHY_ROCKCHIP_TYPEC)	+= phy-rockchip-typec.o
+ obj-$(CONFIG_PHY_ROCKCHIP_USB)		+= phy-rockchip-usb.o
+ obj-$(CONFIG_PHY_ROCKCHIP_USBDP)	+= phy-rockchip-usbdp.o
++obj-$(CONFIG_PHY_ROCKCHIP_A12_TTL)	+= a12-ttl-phy.o

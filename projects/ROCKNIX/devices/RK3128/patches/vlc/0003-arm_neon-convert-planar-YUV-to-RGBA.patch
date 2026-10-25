@@ -1,0 +1,227 @@
+Subject: [PATCH] arm_neon: convert planar YUV to RGBA
+
+libVLC's vmem callers (EmulationStation's preview videos) ask for RGBA,
+which no NEON converter offers, so every frame goes through swscale.
+VLC's swscale module adds SWS_ACCURATE_RND for RGBA output, which turns
+off FFmpeg's NEON YUV->RGBA converters, and for 4:4:4 sources FFmpeg
+forces full chroma interpolation and has no NEON code at all: on a
+Cortex-A7 the conversion runs in hScale8To15_c and yuv2rgbx32_full_2_c
+and costs more than the H.264 decoding.
+
+Add an RGBA output for I420, YV12, I422 and I444 in NEON intrinsics with
+a scalar tail. It uses BT.601 limited-range coefficients, the matrix the
+swscale module uses (it never sets one), and filters 4:2:0 chroma
+vertically like swscale does, so the picture stays as it was; the existing RV32 converters (i420_rgb.S and friends) use BT.709
+coefficients and are left alone.
+
+Compare the visible sizes in Open(): decoders pad their pictures (an
+H.264 400x300 frame is 400x322), so the full sizes never matched and the
+converters were never used for decoded video. Refuse cropping offsets,
+which the converters do not apply.
+
+Found on the Powkiddy A12 (RK3128, Cortex-A7): ES's scraped previews are
+H.264 High 4:4:4 Predictive.
+--- a/modules/arm_neon/yuv_rgb.c
++++ b/modules/arm_neon/yuv_rgb.c
+@@ -29,6 +29,9 @@
+ #include <vlc_picture.h>
+ #include <vlc_cpu.h>
+ #include "arm_neon/chroma_neon.h"
++#if defined(__ARM_NEON) || defined(__ARM_NEON__)
++# include <arm_neon.h>
++#endif
+ 
+ static int Open (vlc_object_t *);
+ 
+@@ -125,6 +128,149 @@
+     nv12_rgb_neon (&out, &in, filter->fmt_in.video.i_visible_width, filter->fmt_in.video.i_visible_height);
+ }
+ 
++#if defined(__ARM_NEON) || defined(__ARM_NEON__)
++/* Planar YUV to RGBA with BT.601 limited-range coefficients, the matrix
++ * the swscale module uses (it never sets one), so the colours do not
++ * change; i420_rgb.S uses BT.709 coefficients. Fixed point scaled by 64,
++ * luma by 74.5 exactly through 149 / 2. */
++#define YUV_RGBA_CY  149
++#define YUV_RGBA_CRV 102
++#define YUV_RGBA_CGU 25
++#define YUV_RGBA_CGV 52
++#define YUV_RGBA_CBU 129
++#define YUV_RGBA_RC  (-1192 - 128 * YUV_RGBA_CRV)
++#define YUV_RGBA_GC  (-1192 + 128 * (YUV_RGBA_CGU + YUV_RGBA_CGV))
++#define YUV_RGBA_BC  (-1192 - 128 * YUV_RGBA_CBU)
++
++static inline void yuv_rgba_store8 (uint8_t *out, uint8x8_t y,
++                                    int16x8_t cr, int16x8_t cg, int16x8_t cb)
++{
++    int16x8_t lum = vreinterpretq_s16_u16 (
++        vshrq_n_u16 (vmull_u8 (y, vdup_n_u8 (YUV_RGBA_CY)), 1));
++    uint8x8x4_t px;
++
++    px.val[0] = vqrshrun_n_s16 (vqaddq_s16 (lum, cr), 6);
++    px.val[1] = vqrshrun_n_s16 (vqaddq_s16 (lum, cg), 6);
++    px.val[2] = vqrshrun_n_s16 (vqaddq_s16 (lum, cb), 6);
++    px.val[3] = vdup_n_u8 (255);
++    vst4_u8 (out, px);
++}
++
++/* Chroma terms of 8 samples. The products are unsigned; the wrapping
++ * 16-bit adds still give the exact signed values, which fit. */
++static inline void yuv_rgba_chroma8 (uint8x8_t u, uint8x8_t v, int16x8_t *cr,
++                                     int16x8_t *cg, int16x8_t *cb)
++{
++    *cr = vaddq_s16 (vdupq_n_s16 (YUV_RGBA_RC),
++                     vreinterpretq_s16_u16 (vmull_u8 (v, vdup_n_u8 (YUV_RGBA_CRV))));
++    *cg = vsubq_s16 (vdupq_n_s16 (YUV_RGBA_GC), vreinterpretq_s16_u16 (
++                     vmlal_u8 (vmull_u8 (u, vdup_n_u8 (YUV_RGBA_CGU)),
++                               v, vdup_n_u8 (YUV_RGBA_CGV))));
++    *cb = vaddq_s16 (vdupq_n_s16 (YUV_RGBA_BC),
++                     vreinterpretq_s16_u16 (vmull_u8 (u, vdup_n_u8 (YUV_RGBA_CBU))));
++}
++
++static inline void yuv_rgba_pixel (uint8_t *out, int y, int u, int v)
++{
++    const int lum = (YUV_RGBA_CY * y) >> 1;
++    const int c[3] = { YUV_RGBA_RC + YUV_RGBA_CRV * v,
++                       YUV_RGBA_GC - YUV_RGBA_CGU * u - YUV_RGBA_CGV * v,
++                       YUV_RGBA_BC + YUV_RGBA_CBU * u };
++
++    for (int i = 0; i < 3; i++)
++    {
++        int s = lum + c[i];
++        s = (s > 32767 ? 32767 : s) + 32;
++        s >>= 6;
++        out[i] = s < 0 ? 0 : s > 255 ? 255 : s;
++    }
++    out[3] = 255;
++}
++
++/* One row; hshift is 1 when chroma is subsampled horizontally (4:2:x). */
++static void yuv_rgba_row (uint8_t *out, const uint8_t *y, const uint8_t *u,
++                          const uint8_t *v, unsigned width, unsigned hshift)
++{
++    int16x8_t cr, cg, cb;
++    unsigned x = 0;
++
++    if (hshift)
++        for (; x + 16 <= width; x += 16)
++        {
++            uint8x16_t yy = vld1q_u8 (y + x);
++
++            yuv_rgba_chroma8 (vld1_u8 (u + x / 2), vld1_u8 (v + x / 2), &cr, &cg, &cb);
++            int16x8x2_t r = vzipq_s16 (cr, cr), g = vzipq_s16 (cg, cg),
++                        b = vzipq_s16 (cb, cb);
++            yuv_rgba_store8 (out + 4 * x, vget_low_u8 (yy), r.val[0], g.val[0], b.val[0]);
++            yuv_rgba_store8 (out + 4 * x + 32, vget_high_u8 (yy), r.val[1], g.val[1], b.val[1]);
++        }
++    else
++        for (; x + 8 <= width; x += 8)
++        {
++            yuv_rgba_chroma8 (vld1_u8 (u + x), vld1_u8 (v + x), &cr, &cg, &cb);
++            yuv_rgba_store8 (out + 4 * x, vld1_u8 (y + x), cr, cg, cb);
++        }
++
++    for (; x < width; x++)
++        yuv_rgba_pixel (out + 4 * x, y[x], u[x >> hshift], v[x >> hshift]);
++}
++
++/* 4:2:0 chroma sits between two luma rows: (3 * near + far + 2) / 4, as
++ * swscale filters it vertically. */
++static void yuv_rgba_chroma_rows (uint8_t *dst, const uint8_t *near,
++                                  const uint8_t *far, unsigned n)
++{
++    unsigned x = 0;
++
++    for (; x + 8 <= n; x += 8)
++        vst1_u8 (dst + x, vrshrn_n_u16 (vaddw_u8 (vmull_u8 (vld1_u8 (near + x),
++                 vdup_n_u8 (3)), vld1_u8 (far + x)), 2));
++    for (; x < n; x++)
++        dst[x] = (3 * near[x] + far[x] + 2) >> 2;
++}
++
++static void YUV_RGBA (filter_t *filter, picture_t *src, picture_t *dst)
++{
++    const vlc_chroma_description_t *desc =
++        vlc_fourcc_GetChromaDescription (filter->fmt_in.video.i_chroma);
++    const unsigned width = filter->fmt_in.video.i_visible_width;
++    const unsigned height = filter->fmt_in.video.i_visible_height;
++    /* 4:2:0 has half as many chroma rows, 4:2:2 and 4:4:4 as many */
++    const unsigned vshift = desc->p[1].h.num < desc->p[1].h.den;
++    const unsigned hshift = desc->p[1].w.num < desc->p[1].w.den;
++    const bool swap_uv = filter->fmt_in.video.i_chroma == VLC_CODEC_YV12;
++    const plane_t *pu = &src->p[swap_uv ? V_PLANE : U_PLANE];
++    const plane_t *pv = &src->p[swap_uv ? U_PLANE : V_PLANE];
++    const unsigned cwidth = (width + hshift) >> hshift;
++    const unsigned crows = (height + vshift) >> vshift;
++    uint8_t *cbuf = vshift ? malloc (2 * cwidth) : NULL;
++
++    for (unsigned j = 0; j < height; j++)
++    {
++        const unsigned k = j >> vshift;
++        const uint8_t *u = pu->p_pixels + k * pu->i_pitch;
++        const uint8_t *v = pv->p_pixels + k * pv->i_pitch;
++
++        if (cbuf != NULL)
++        {
++            /* even rows lean on the chroma row above, odd rows below */
++            unsigned far = (j & 1) ? (k + 1 < crows ? k + 1 : k) : (k ? k - 1 : 0);
++
++            yuv_rgba_chroma_rows (cbuf, u, pu->p_pixels + far * pu->i_pitch, cwidth);
++            yuv_rgba_chroma_rows (cbuf + cwidth, v, pv->p_pixels + far * pv->i_pitch, cwidth);
++            u = cbuf;
++            v = cbuf + cwidth;
++        }
++        yuv_rgba_row (dst->p->p_pixels + j * dst->p->i_pitch,
++                      src->Y_PIXELS + j * src->Y_PITCH, u, v, width, hshift);
++    }
++    free (cbuf);
++}
++
++VIDEO_FILTER_WRAPPER (YUV_RGBA)
++#endif
++
+ VIDEO_FILTER_WRAPPER (I420_RGBA)
+ VIDEO_FILTER_WRAPPER (I420_RV16)
+ VIDEO_FILTER_WRAPPER (YV12_RGBA)
+@@ -138,9 +284,14 @@
+     if (!vlc_CPU_ARM_NEON())
+         return VLC_EGENERIC;
+ 
+-    if (((filter->fmt_in.video.i_width | filter->fmt_in.video.i_height) & 1)
+-     || (filter->fmt_in.video.i_width != filter->fmt_out.video.i_width)
+-     || (filter->fmt_in.video.i_height != filter->fmt_out.video.i_height)
++    /* The converters read the planes from their start and convert the
++     * visible size: decoders pad the picture (an H.264 400x300 frame is
++     * 400x322), so compare visible sizes and refuse cropping offsets. */
++    if (((filter->fmt_in.video.i_visible_width | filter->fmt_in.video.i_visible_height) & 1)
++     || filter->fmt_in.video.i_x_offset || filter->fmt_in.video.i_y_offset
++     || filter->fmt_out.video.i_x_offset || filter->fmt_out.video.i_y_offset
++     || (filter->fmt_in.video.i_visible_width != filter->fmt_out.video.i_visible_width)
++     || (filter->fmt_in.video.i_visible_height != filter->fmt_out.video.i_visible_height)
+      || (filter->fmt_in.video.orientation != filter->fmt_out.video.orientation))
+         return VLC_EGENERIC;
+ 
+@@ -182,6 +333,23 @@
+             }
+             break;
+ 
++#if defined(__ARM_NEON) || defined(__ARM_NEON__)
++        case VLC_CODEC_RGBA:
++            /* libVLC's vmem callers (ES's previews) ask for RGBA */
++            switch (filter->fmt_in.video.i_chroma)
++            {
++                case VLC_CODEC_I420:
++                case VLC_CODEC_YV12:
++                case VLC_CODEC_I422:
++                case VLC_CODEC_I444:
++                    filter->pf_video_filter = YUV_RGBA_Filter;
++                    break;
++                default:
++                    return VLC_EGENERIC;
++            }
++            break;
++#endif
++
+         default:
+             return VLC_EGENERIC;
+     }

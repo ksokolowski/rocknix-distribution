@@ -82,12 +82,15 @@ rm -rf ./build.${DISTRO}-${DEVICE}.${ARCH}/image
 
 case "${ARCH}" in
   arm)
-    if [ "${BASE_ONLY}" == "true" ] || [ "${ENABLE_32BIT}" != "true" ]; then
+    if [ "${NATIVE_ARM}" = "yes" ]; then
+      make image
+    elif [ "${BASE_ONLY}" == "true" ] || [ "${ENABLE_32BIT}" != "true" ]; then
       exit 0
+    else
+      export PKG_BUILD_PERF=no
+      scripts/build_compat arm
+      scripts/install arm
     fi
-    export PKG_BUILD_PERF=no
-    scripts/build_compat arm
-    scripts/install arm
     ;;
   *)
     make image

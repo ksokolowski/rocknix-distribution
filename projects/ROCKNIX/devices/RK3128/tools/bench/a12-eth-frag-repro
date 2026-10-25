@@ -1,0 +1,34 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Run on A12 under setsid (MARGIN_KB: free memory left unfragmented): fragment free memory, cycle eth0, record whether
+# r8152's open fails (ENOMEM), then restore. Log: /storage/a12-coretest/frag-NAME.log
+log=/storage/a12-coretest/frag-$1.log; exec > $log 2>&1
+echo "boot $(cat /proc/sys/kernel/random/boot_id)"; cat /proc/buddyinfo
+python3 - <<'PY' &
+import time
+keep, drop = [], []
+# 4 KiB pieces up to ~MemAvailable minus a margin; drop every other one.
+avail = int(open("/proc/meminfo").read().split("MemAvailable:")[1].split()[0])
+import os
+n = max(0, (avail - int(os.environ.get("MARGIN_KB", "24000"))) // 4)
+for i in range(n):
+    b = bytearray(4096); b[0] = 1
+    (keep if i % 2 else drop).append(b)
+drop.clear()
+open("/tmp/frag-ready", "w").write(str(n))
+time.sleep(60)
+PY
+py=$!
+for i in $(seq 1 120); do [ -e /tmp/frag-ready ] && break; sleep 1; done
+echo "fragmented: $(cat /tmp/frag-ready) pieces"; cat /proc/buddyinfo
+ip link set eth0 down; sleep 1
+if ip link set eth0 up; then echo "UP ok"; else echo "UP FAILED rc=$?"; fi
+cat /proc/buddyinfo
+kill $py; wait $py 2>/dev/null; rm -f /tmp/frag-ready
+sleep 2
+for i in $(seq 1 30); do
+  ip link set eth0 up 2>/dev/null && [ "$(cat /sys/class/net/eth0/carrier 2>/dev/null)" = 1 ] && break
+  echo 1 > /proc/sys/vm/compact_memory; sleep 2
+done
+echo "restored: carrier=$(cat /sys/class/net/eth0/carrier 2>/dev/null) tries=$i"
+dmesg | tail -5

@@ -13,15 +13,19 @@ PKG_LONGDESC="Emulationstation emulator frontend"
 PKG_BUILD_FLAGS="-gold"
 PKG_PATCH_DIRS+=" ${DEVICE}"
 
+ES_GRAPHICS="-DGLES3=1"
+[ "${GLES_VERSION}" = "2" ] && ES_GRAPHICS="-DGLES2=1 -DGLES3=0"
+
 PKG_CMAKE_OPTS_TARGET+=" -DROCKNIX=1 \
                          -DDISABLE_KODI=1 \
                          -DENABLE_FILEMANAGER=0 \
                          -DCEC=0 \
-                         -DENABLE_PULSE=1 \
                          -DUSE_SYSTEM_PUGIXML=1 \
-                         -DGLES3=1"
+                         ${ES_GRAPHICS}"
 
 [ "${BATTERYPLUS_SUPPORT}" = "yes" ] && PKG_CMAKE_OPTS_TARGET+=" -DBATTERYPLUS=1"
+# Without PipeWire, volume control and its OSD use the ALSA "Master" mixer.
+[ "${PIPEWIRE_SUPPORT}" = "yes" ] && PKG_CMAKE_OPTS_TARGET+=" -DENABLE_PULSE=1"
 
 pre_configure_target() {
   for key in SCREENSCRAPER_DEV_LOGIN \
@@ -50,6 +54,17 @@ makeinstall_target() {
 
   mkdir -p ${INSTALL}/usr/config/emulationstation
     cp -a ${PKG_DIR}/config/common/*.cfg ${INSTALL}/usr/config/emulationstation
+
+    if [ "${DEVICE}" = "RK3128" ]; then
+      cp "${PKG_DIR}/config/RK3128/es_settings.cfg" "${INSTALL}/usr/config/emulationstation/"
+      python3 - "${INSTALL}/usr/config/emulationstation/es_input.cfg" "${PKG_DIR}/config/RK3128/controller.xml" <<'PYCFG'
+import sys
+import xml.etree.ElementTree as ET
+configuration = ET.parse(sys.argv[1])
+configuration.getroot().extend(ET.parse(sys.argv[2]).getroot())
+configuration.write(sys.argv[1], encoding="utf-8", xml_declaration=True)
+PYCFG
+    fi
     rm -f ${INSTALL}/usr/config/emulationstation/resources/logo.png
 
   mkdir -p ${INSTALL}/usr/config/emulationstation/resources

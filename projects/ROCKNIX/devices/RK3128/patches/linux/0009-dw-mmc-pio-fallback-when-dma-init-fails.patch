@@ -1,0 +1,27 @@
+Subject: [PATCH] mmc: dw_mmc: fall back to PIO when DMA re-init fails on resume
+
+On the A12 the PL330 DMA engine can fail ('Runtime PM usage count
+underflow', 'pl330_update ... Unexpected!'). dw_mci_runtime_resume then
+gets no external DMA channel, edmac_init leaves host->dms NULL and returns
+an error, yet use_dma stays EDMAC; the card reset path oopsed in
+dw_mci_edmac_start_dma (pstore before boot f8f51dd6) and stop_dma (test 22).
+Switch to PIO instead so an SD error does not become a kernel panic.
+
+--- a/drivers/mmc/host/dw_mmc.c
++++ b/drivers/mmc/host/dw_mmc.c
+@@ -3464,8 +3464,13 @@
+ 
+ 	if (host->use_dma && host->dma_ops->init) {
+ 		ret = host->dma_ops->init(host);
+-		if (ret)
+-			return ret;
++		if (ret) {
++			/* A failed channel request leaves host->dms NULL; staying in
++			 * DMA mode would dereference it on the next transfer.
++			 */
++			dev_warn(host->dev, "DMA re-init failed (%d), using PIO\n", ret);
++			host->use_dma = TRANS_MODE_PIO;
++		}
+ 	}
+ 
+ 	/*

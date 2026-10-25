@@ -1,0 +1,12 @@
+[Unit]
+Description=Shutdown screen
+After=emustation.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/true
+ExecStop=/usr/bin/a12-splash --shutdown
+
+[Install]
+WantedBy=multi-user.target

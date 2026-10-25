@@ -1,0 +1,51 @@
+Subject: [PATCH] lima: close the screen fd on destroy and on failed creation
+
+lima_drm_screen_create() and lima_drm_screen_create_renderonly() pass a
+dup of the device fd to u_pipe_screen_lookup_or_create(), which stores it
+in screen->fd. lima_screen_destroy() and the error paths of
+lima_screen_create() never close it, so every pipe screen destroyed (for
+example SDL_Quit -> eglTerminate -> gbm_device_destroy) leaks one open
+render-node descriptor and its DRM client. v3d and vc4 close their screen
+fd the same way.
+
+Powkiddy A12: EmulationStation tears down its renderer for every game
+launch and leaked one /dev/dri/renderD128 and Lima client each time.
+
+--- a/src/gallium/drivers/lima/lima_screen.c
++++ b/src/gallium/drivers/lima/lima_screen.c
+@@ -23,6 +23,7 @@
+  */
+ 
+ #include <string.h>
++#include <unistd.h>
+ 
+ #include "util/ralloc.h"
+ #include "util/u_debug.h"
+@@ -67,6 +68,7 @@
+    lima_bo_table_fini(screen);
+    disk_cache_destroy(screen->disk_cache);
+    lima_resource_screen_destroy(screen);
++   close(screen->fd);
+    ralloc_free(screen);
+ }
+ 
+@@ -564,8 +566,10 @@
+    struct lima_screen *screen;
+ 
+    screen = rzalloc(NULL, struct lima_screen);
+-   if (!screen)
++   if (!screen) {
++      close(fd);
+       return NULL;
++   }
+ 
+    screen->fd = fd;
+    screen->ro = ro;
+@@ -671,6 +675,7 @@
+ err_out1:
+    lima_bo_cache_fini(screen);
+ err_out0:
++   close(screen->fd);
+    ralloc_free(screen);
+    return NULL;
+ }

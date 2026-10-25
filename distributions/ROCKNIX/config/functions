@@ -38,6 +38,7 @@ EOF
 }
 
 add_system_doc() {
+  mkdir -p "${DOCTMP}"
   echo -n "|${SYSTEM_MANUFACTURER}|${SYSTEM_FULLNAME} (${SYSTEM_NAME})|${SYSTEM_RELEASE}|\`$(basename ${SYSTEM_PATH})\`|${SYSTEM_EXTENSION}|" >>${DOCTMP}/${1}:system.tmp
 }
 
@@ -79,15 +80,63 @@ clean_es_cache() {
   fi
 }
 
+# True when a package built the libretro core ${1} for this image.
+es_core_built() {
+  # Only the image's core packages count: the build tree can hold cores
+  # from packages this image does not include.
+  local pkg
+  for pkg in ${LIBRETRO_CORES}; do
+    ls "${BUILD}"/install_pkg/"${pkg}"-*/usr/lib/libretro/"${1}"_libretro.so >/dev/null 2>&1 && return 0
+  done
+  return 1
+}
+
+# True when the image can start emulator ${2} core ${3} for system ${1}.
+# runemu.sh starts standalone cores as /usr/bin/start_${CORE%-*}.sh except on
+# the platforms it dispatches itself; those, and systems with their own
+# SYSTEM_COMMAND (moonlight, tools, ...), are not filtered. The package that
+# installs a start script must be built first (in PKG_EMUS on the A12).
+es_emulator_built() {
+  grep -q '^SYSTEM_COMMAND=' "${ROOT}/config/emulators/${1}.conf" 2>/dev/null && return 0
+  case "${2}" in
+    retroarch) es_core_built "${3}" ;;
+    mednafen) ls "${BUILD}"/install_pkg/*/usr/bin/start_mednafen.sh >/dev/null 2>&1 ;;
+    *)
+      case "${1}" in
+        setup|gamecube|triforce|wii|wiiware|ports|windows|shell) return 0 ;;
+      esac
+      ls "${BUILD}"/install_pkg/*/usr/bin/start_"${3%-*}".sh >/dev/null 2>&1
+      ;;
+  esac
+}
+
 add_emu_core() {
   if [ ! -d "${ESTMP}" ]
   then
     mkdir -p "${ESTMP}"
   fi
 
+  local default="${4}"
+  # Devices that ship a subset of the emulators (ES_ONLY_BUILT_CORES=yes)
+  # list only the built ones; a missing default passes to the next built core.
+  if [ "${ES_ONLY_BUILT_CORES}" = "yes" ]
+  then
+    if ! es_emulator_built "${1}" "${2}" "${3}"
+    then
+      [ "${default}" = "true" ] && touch "${ESTMP}/${1}-default.pending"
+      touch "${ESTMP}/${1}-emulators.dropped"
+      return 0
+    fi
+    if [ -e "${ESTMP}/${1}-default.pending" ]
+    then
+      rm -f "${ESTMP}/${1}-default.pending"
+      default=true
+    fi
+  fi
+
   # Schema: emulator|core|true/false
-  echo "${2}|${3}|${4}" >>${ESTMP}/${1}-emulators.tmp
-  add_emu_doc $*
+  echo "${2}|${3}|${default}" >>${ESTMP}/${1}-emulators.tmp
+  add_emu_doc ${1} ${2} ${3} ${default}
 }
 
 mk_es_systems() {
@@ -132,6 +181,14 @@ add_es_system() {
   if [[ -z "${SYSTEM_COMMAND}" ]];
   then
     SYSTEM_COMMAND=$RUNCMD
+  fi
+  # Every emulator of this system was dropped (ES_ONLY_BUILT_CORES): leave it
+  # out of ES, its games could not start. The ROM directory and docs stay.
+  if [ -e "${ESTMP}/${SYSTEM_NAME}-emulators.dropped" ] && [ ! -e "${ESTMP}/${SYSTEM_NAME}-emulators.tmp" ]
+  then
+    add_system_dir "${SYSTEM_PATH}"
+    add_system_doc ${SYSTEM_NAME}
+    return 0
   fi
   if [ ! -e "${ESTMP}/${SYSTEM_NAME}.tmp" ]
   then

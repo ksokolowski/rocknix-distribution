@@ -1,0 +1,38 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+set -eu
+directory=${A12_DIAGNOSTICS_DIR:-/storage/.cache/a12-diagnostics}
+pstore=${A12_PSTORE_DIR:-/sys/fs/pstore}
+report=${A12_HARDWARE_REPORT:-/usr/bin/a12-hardware-report}
+phase=${1:-boot}
+case "$phase" in boot|shutdown) ;; *) exit 1 ;; esac
+boot_id=${A12_BOOT_ID:-$(cat /proc/sys/kernel/random/boot_id)}
+mkdir -p "$directory"
+# Keep the whole previous boot (its boot and, if it shut down cleanly, its
+# shutdown report) in prev/, so a problem boot survives the next boot.
+# A second run in the same boot does not rotate.
+if [ "$phase" = boot ] && [ "$(cat "$directory/boot-id" 2>/dev/null)" != "$boot_id" ]; then
+  rm -rf "$directory/prev"
+  mkdir "$directory/prev"
+  for file in "$directory"/boot-id "$directory"/boot-*.txt "$directory"/shutdown-*.txt; do
+    if [ -e "$file" ]; then mv "$file" "$directory/prev/"; fi
+  done
+  echo "$boot_id" >"$directory/boot-id"
+fi
+# Keep the previous boot's crash log; removing a record frees its ramoops slot.
+if [ "$phase" = boot ] && [ -n "$(ls -A "$pstore" 2>/dev/null)" ]; then
+  mkdir -p "$directory/pstore-$boot_id"
+  cp "$pstore"/* "$directory/pstore-$boot_id/" && rm -f "$pstore"/*
+fi
+# Write directly to storage even if the persistent /var/log mount fails.
+{
+  "$report" || true
+  printf '\nFailed services:\n'
+  systemctl --failed --no-pager || true
+  printf '\nKernel messages:\n'
+  dmesg || true
+} >"$directory/$phase-hardware.txt.new" 2>&1
+mv "$directory/$phase-hardware.txt.new" "$directory/$phase-hardware.txt"
+journalctl -b --no-pager -o short-monotonic >"$directory/$phase-journal.txt.new" 2>&1 || true
+mv "$directory/$phase-journal.txt.new" "$directory/$phase-journal.txt"
+sync

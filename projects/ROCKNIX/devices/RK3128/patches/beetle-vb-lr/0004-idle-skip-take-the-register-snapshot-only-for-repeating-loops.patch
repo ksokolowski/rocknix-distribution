@@ -1,0 +1,98 @@
+Subject: [PATCH] idle skip: take the register snapshot only for repeating loops
+
+The XPSTTS idle check copied all 32 program registers whenever its cheap
+checks (same instruction, value and memory writes) failed. In gameplay
+the polling loops often write memory every round, so the copy ran on
+nearly every read: 11.6 % of Wario Land's busy scenes on a Cortex-A7
+(memcpy, memcmp, the check). Note the cheap state only, and take the
+snapshot once a loop repeats it; skipping then starts one round later,
+still in whole loop periods. Output is bit-identical.
+
+diff --git a/libretro.cpp b/libretro.cpp
+index 8dfe0e2..41bbe33 100644
+--- a/libretro.cpp
++++ b/libretro.cpp
+@@ -231,7 +231,7 @@ uint8 MDFN_FASTCALL MemRead8(v810_timestamp_t &timestamp, uint32 A)
+ static uint32 MemWriteCount;
+ static struct
+ {
+-   bool valid;
++   bool valid, regs_valid;
+    uint32 pc, writes, regs[32];
+    uint16 value;
+    v810_timestamp_t ts;
+@@ -240,40 +240,51 @@ static struct
+ static void IdlePollReset(void)
+ {
+    IdlePoll.valid = false;
++   IdlePoll.regs_valid = false;
+ }
+ 
+ /* Out of line: inlined, it makes MemRead16 (every memory read) heavier. */
+ static NO_INLINE uint16 ReadXPSTTS(v810_timestamp_t &timestamp, uint32 A)
+ {
+-   const uint16 value = VIP_Read16(timestamp, A);
+-   const uint32 pc    = VB_V810->GetPC();
+-   const uint32 *regs = VB_V810->GetPRArray();
+-
+-   /* Cheap checks first; the registers only when they pass. */
+-   if (IdlePoll.valid && IdlePoll.pc == pc && IdlePoll.value == value &&
+-       IdlePoll.writes == MemWriteCount + VB_V810->DataFastWrites && !memcmp(IdlePoll.regs, regs, sizeof(IdlePoll.regs)))
++   const uint16 value  = VIP_Read16(timestamp, A);
++   const uint32 pc     = VB_V810->GetPC();
++   const uint32 writes = MemWriteCount + VB_V810->DataFastWrites;
++   const uint32 *regs  = VB_V810->GetPRArray();
++
++   /* Cheap checks first. The 128-byte register snapshot is taken only once
++    * a loop repeats them, so loops doing real work (writing memory every
++    * round) do not pay for it; skipping then starts one round later. */
++   if (IdlePoll.valid && IdlePoll.pc == pc && IdlePoll.value == value && IdlePoll.writes == writes)
+    {
+-      const v810_timestamp_t period = timestamp - IdlePoll.ts;
+-      v810_timestamp_t limit = VB_V810->GetEventNT();
+-      const int32 sbout = VIP_PollLimit(timestamp);
++      if (IdlePoll.regs_valid && !memcmp(IdlePoll.regs, regs, sizeof(IdlePoll.regs)))
++      {
++         const v810_timestamp_t period = timestamp - IdlePoll.ts;
++         v810_timestamp_t limit = VB_V810->GetEventNT();
++         const int32 sbout = VIP_PollLimit(timestamp);
+ 
+-      if (sbout < limit)
+-         limit = sbout;
+-      if (period > 0 && period < 256 && limit > timestamp)
++         if (sbout < limit)
++            limit = sbout;
++         if (period > 0 && period < 256 && limit > timestamp)
++         {
++            const int32 skip = (limit - 1 - timestamp) / period;
++            if (skip > 0)
++               timestamp += skip * period;
++         }
++      }
++      else
+       {
+-         const int32 skip = (limit - 1 - timestamp) / period;
+-         if (skip > 0)
+-            timestamp += skip * period;
++         memcpy(IdlePoll.regs, regs, sizeof(IdlePoll.regs));
++         IdlePoll.regs_valid = true;
+       }
+-      IdlePoll.ts = timestamp;	/* registers, pc, value: unchanged */
++      IdlePoll.ts = timestamp;
+       return value;
+    }
+-   IdlePoll.valid  = true;
+-   IdlePoll.pc     = pc;
+-   IdlePoll.value  = value;
+-   IdlePoll.writes = MemWriteCount + VB_V810->DataFastWrites;
+-   IdlePoll.ts     = timestamp;
+-   memcpy(IdlePoll.regs, regs, sizeof(IdlePoll.regs));
++   IdlePoll.valid      = true;
++   IdlePoll.regs_valid = false;
++   IdlePoll.pc         = pc;
++   IdlePoll.value      = value;
++   IdlePoll.writes     = writes;
++   IdlePoll.ts         = timestamp;
+    return value;
+ }
+ 

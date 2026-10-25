@@ -1,0 +1,20 @@
+if TARGET_POWKIDDY_A12_RK3128
+
+config SYS_BOARD
+	default "a12-rk3128"
+
+config SYS_VENDOR
+	default "powkiddy"
+
+config SYS_CONFIG_NAME
+	default "powkiddy-a12-rk3128"
+
+config A12_DISPLAY
+	bool "A12 RGB panel on the RK3128 VOP (draft, unverified)"
+	depends on VIDEO && DM_GPIO
+	help
+	  Light the A12 revision A panel in U-Boot (VOP lite, TTL PHY, panel
+	  power sequence, PWM backlight) for a logo before Linux. Not verified
+	  on hardware; only powkiddy-a12-display-rk3128_defconfig enables it.
+
+endif

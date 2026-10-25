@@ -15,7 +15,12 @@ make_target() {
     mkdir built
   fi
 
-  for EMUTYPE in x128 x64sc x64dtv xscpu64 xplus4 xvic xcbm5x0 xcbm2 xpet x64; do
+  local EMUTYPES="x128 x64sc x64dtv xscpu64 xplus4 xvic xcbm5x0 xcbm2 xpet x64"
+  # The A12 ships the C64 only: cycle-exact x64sc and the fast x64.
+  if [ "${DEVICE}" = "RK3128" ]; then
+    EMUTYPES="x64sc x64"
+  fi
+  for EMUTYPE in ${EMUTYPES}; do
     make clean
     make EMUTYPE=${EMUTYPE}
     mv vice_*_libretro.so built
@@ -24,6 +29,10 @@ make_target() {
 
 makeinstall_target() {
   mkdir -p ${INSTALL}/usr/lib/libretro
+  if [ "${DEVICE}" = "RK3128" ]; then
+    cp -a built/vice_x64sc_libretro.so built/vice_x64_libretro.so ${INSTALL}/usr/lib/libretro
+    return
+  fi
     cp -a built/vice_x128_libretro.so ${INSTALL}/usr/lib/libretro
     cp -a built/vice_x64_libretro.so ${INSTALL}/usr/lib/libretro
     cp -a built/vice_xplus4_libretro.so ${INSTALL}/usr/lib/libretro

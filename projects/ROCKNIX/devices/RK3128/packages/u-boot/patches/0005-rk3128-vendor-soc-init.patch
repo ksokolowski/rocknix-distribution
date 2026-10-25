@@ -1,0 +1,58 @@
+Subject: [PATCH] rockchip: rk3128: raise the LCDC QoS priority in arch_cpu_init
+
+Mainline U-Boot has no RK3128 arch_cpu_init. The vendor loader raises the
+LCDC AXI QoS priority to the highest level, and Linux keeps the QoS
+register as the bootloader left it. On the Powkiddy A12 the priority
+found before U-Boot (1/1) let CPU and GPU traffic starve LCDC scanout:
+the RGB panel flickered with black vertical lines under memory load at
+DDR 456 MHz. Writing the vendor value removes them.
+
+The vendor function also sets the MSCH read latency, which already reads
+0x3f before U-Boot on the A12, and muxes GPIO1C1 from sdcard_detn to GPIO.
+On the A12 the GPIO1C1 write stops a cold power-on (warm reboots are
+unaffected), alone or together with the other writes; neither is ported.
+
+Comparison: caesar-u-boot 9724e7aa arch/arm/mach-rockchip/rk3128/rk3128.c
+(arch_cpu_init). Existing GPL notices are retained.
+
+--- a/arch/arm/mach-rockchip/rk3128/Makefile
++++ b/arch/arm/mach-rockchip/rk3128/Makefile
+@@ -6,3 +6,4 @@
+ 
+ obj-y += syscon_rk3128.o
+ obj-y += clk_rk3128.o
++obj-y += rk3128.o
+--- /dev/null
++++ b/arch/arm/mach-rockchip/rk3128/rk3128.c
+@@ -0,0 +1,31 @@
++// SPDX-License-Identifier: GPL-2.0+
++/*
++ * Copyright (c) 2017 Rockchip Electronics Co., Ltd
++ *
++ * LCDC QoS setting from the vendor caesar-u-boot 9724e7aa
++ * arch/arm/mach-rockchip/rk3128/rk3128.c arch_cpu_init.
++ */
++#include <init.h>
++#include <asm/io.h>
++
++#define QOS_LCDC_PRIORITY	0x1012f188
++#define QOS_PRIORITY_LEVEL(h, l) \
++	((((h) & 3) << 8) | (((h) & 3) << 2) | ((l) & 3))
++
++int arch_cpu_init(void)
++{
++	/*
++	 * Highest DDR priority for LCDC scanout. With the priority left by
++	 * the earlier boot stages (1/1) the Powkiddy A12 RGB panel shows
++	 * black vertical lines under memory load; Linux keeps the
++	 * bootloader's QoS setting.
++	 *
++	 * The vendor function also sets the MSCH read latency (already 0x3f
++	 * before U-Boot on the A12) and muxes GPIO1C1 (sdcard_detn) to GPIO.
++	 * The GPIO1C1 write stops a cold power-on of the A12, so neither is
++	 * ported.
++	 */
++	writel(QOS_PRIORITY_LEVEL(3, 3), QOS_LCDC_PRIORITY);
++
++	return 0;
++}

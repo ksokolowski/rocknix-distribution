@@ -11,8 +11,17 @@ PKG_DEPENDS_TARGET="toolchain retroarch flac libogg mpg123"
 PKG_LONGDESC="Port of uae4arm for libretro (rpi/android)"
 
 PKG_MAKE_OPTS_TARGET="-f Makefile.libretro platform=unix_aarch64"
+# The A12 is 32-bit ARMv7 (Cortex-A7, NEON-VFPv4): unix_aarch64 assembly does
+# not build there, the core has a matching target.
+if [ "${DEVICE}" = "RK3128" ]; then
+  PKG_MAKE_OPTS_TARGET="-f Makefile.libretro platform=classic_armv7_a7"
+fi
 
 post_unpack() {
+  # classic_armv7_a7 does not link the libraries the core uses (A12).
+  if [ "${DEVICE}" = "RK3128" ]; then
+    sed -i '/platform), classic_armv7_a7)/a\\tLDFLAGS += -lz -lpthread -lFLAC -lmpg123 -ldl' ${PKG_BUILD}/Makefile.libretro
+  fi
   sed -i 's/-lFLAC/-lFLAC -logg/' ${PKG_BUILD}/Makefile.libretro
 }
 
