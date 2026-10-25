@@ -1,0 +1,59 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Back up the running boot payload on STORAGE, upload an update tar, reboot.
+# A partial upload from an earlier attempt is resumed; the device only
+# reboots after the uploaded file's SHA-256 matches the local tar.
+#   --skip-backup         reuse an existing verified /storage/.a12-rollback set
+#   A12_DEPLOY_RATE_KBPS  throttle the upload; heavy SD writes plus full-rate
+#                         Wi-Fi made the A12's USB Wi-Fi drop (tests 22, 24)
+set -euo pipefail
+here=$(cd "$(dirname "$0")" && pwd)
+ssh_cmd=${A12_SSH:-$here/a12-ssh}
+dry=0 backup_step=1
+while [ $# -gt 1 ]; do
+  case "$1" in
+    --dry-run) dry=1 ;;
+    --skip-backup) backup_step=0 ;;
+    *) echo "a12-deploy: unknown option $1" >&2; exit 2 ;;
+  esac
+  shift
+done
+tar=$1
+name=$(basename "$tar")
+stamp=$(date -u +%Y%m%dT%H%M%SZ)
+backup=/storage/.a12-rollback/$stamp
+part="/storage/.update/$name.part"
+remote() { if [ "$dry" = 1 ]; then echo "remote: $*"; else "$ssh_cmd" "$@"; fi; }
+[ "$backup_step" = 0 ] || remote "mkdir -p $backup && cp /flash/KERNEL /flash/KERNEL.md5 /flash/SYSTEM /flash/SYSTEM.md5 /flash/extlinux/extlinux.conf /flash/device_trees/rk3128-powkiddy-a12-rev-a.dtb $backup/ && (cd $backup && sha256sum KERNEL SYSTEM extlinux.conf rk3128-powkiddy-a12-rev-a.dtb >SHA256SUMS && sha256sum -c SHA256SUMS)"
+if [ "$dry" = 1 ]; then
+  echo "upload: $tar -> /storage/.update/$name (resuming $part if present)"
+else
+  have=$("$ssh_cmd" "wc -c < '$part' 2>/dev/null || echo 0" | tr -d ' ')
+  echo "resuming at byte $have of $(wc -c < "$tar")"
+  throttle() {
+    if [ -n "${A12_DEPLOY_RATE_KBPS:-}" ]; then
+      python3 -c 'import sys, time
+rate = int(sys.argv[1]) * 1024; chunk = 65536; start = time.monotonic(); sent = 0
+while True:
+    data = sys.stdin.buffer.read(chunk)
+    if not data:
+        break
+    sys.stdout.buffer.write(data); sys.stdout.buffer.flush(); sent += len(data)
+    delay = sent / rate - (time.monotonic() - start)
+    if delay > 0:
+        time.sleep(delay)' "$A12_DEPLOY_RATE_KBPS"
+    else
+      cat
+    fi
+  }
+  tail -c +"$((have + 1))" "$tar" | throttle | "$ssh_cmd" "cat >> '$part'"
+  want=$(sha256sum < "$tar" | cut -d' ' -f1)
+  got=$("$ssh_cmd" "sha256sum < '$part'" | cut -d' ' -f1)
+  if [ "$want" != "$got" ]; then
+    "$ssh_cmd" "rm -f '$part'"
+    echo "upload checksum mismatch; removed $part, not rebooting" >&2
+    exit 1
+  fi
+  "$ssh_cmd" "mv '$part' '/storage/.update/$name' && sync"
+fi
+remote "sync && reboot"

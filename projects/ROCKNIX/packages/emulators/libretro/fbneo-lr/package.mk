@@ -13,6 +13,11 @@ PKG_TOOLCHAIN="make"
 
 PKG_MAKE_OPTS_TARGET=" -C ../src/burner/libretro USE_CYCLONE=0 profile=performance"
 
+# KNULLI uses the ARM assembly 68000 core on its RK3128 target.
+if [ "${DEVICE}" = "RK3128" ]; then
+  PKG_MAKE_OPTS_TARGET=" -C ../src/burner/libretro USE_CYCLONE=1 profile=performance"
+fi
+
 if [[ "${TARGET_FPU}" =~ "neon" ]]; then
   PKG_MAKE_OPTS_TARGET+=" HAVE_NEON=1"
 fi

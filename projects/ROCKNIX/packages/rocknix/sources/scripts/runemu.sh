@@ -391,11 +391,14 @@ COOLINGPROFILE=$(get_setting cooling.profile)
 
 ### Configure GPU performance mode
 GPUPERF=$(get_setting "gpuperf" "${PLATFORM}" "${ROMNAME##*/}")
+if [ -z "${GPUPERF}" ]; then
+  GPUPERF="${DEVICE_GAME_GPU_PERFORMANCE:-}"
+fi
 if [ ! -z ${GPUPERF} ]
 then
   ${VERBOSE} && log $0 "Set GPU performance to (${GPUPERF})"
   gpu_performance_level ${GPUPERF}
-  get_gpu_performance_level >/tmp/.gpu_performance_level
+  printf '%s\n' "${GPUPERF}" >/tmp/.gpu_performance_level
 fi
 
 if [ "${DEVICE_HAS_FAN}" = "true" ]
@@ -612,6 +615,14 @@ else
   prerotate_env
 fi
 
+# Opt in to A12 performance sampling; the sampler adds CPU and SD I/O load.
+A12_MONITOR_PID=""
+if [ -f /storage/.config/a12-game-monitor.enabled ] &&
+   command -v a12-game-monitor >/dev/null 2>&1; then
+  a12-game-monitor "$$" >>"${OUTPUT_LOG}" 2>&1 &
+  A12_MONITOR_PID=$!
+fi
+
 # If the rom is a shell script just execute it, useful for DOSBOX and ScummVM scan scripts
 if [[ "${ROMNAME}" == *".sh" ]] && [ ! "${PLATFORM}" = "ports" ] && [ ! "${PLATFORM}" = "windows" ]; then
         ${VERBOSE} && log $0 "Executing shell script ${ROMNAME}"
@@ -622,6 +633,10 @@ else
         eval game_scope ${RUNTHIS} &>>${OUTPUT_LOG}
         ret_error=$?
         game_scope_stop ${ret_error}
+fi
+
+if [ -n "${A12_MONITOR_PID}" ]; then
+  kill "${A12_MONITOR_PID}" 2>/dev/null
 fi
 
 ### Switch back to performance mode to clean up

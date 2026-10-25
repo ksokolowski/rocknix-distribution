@@ -1,0 +1,72 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Run on A12 (over SSH) after booting a sync/upstream-2026-10-11 build:
+# collects what BACKLOG's pending hardware checks need, read-only, into
+# /storage/.cache/a12-diagnostics/sync-checks-<boot id>.txt.
+#   a12-sync-checks            once, at the ES menu after boot
+#   a12-sync-checks idle       also sample zram and memory across 20 min idle
+root=${A12_ROOT:-}
+out_dir=${A12_DIAGNOSTICS_DIR:-$root/storage/.cache/a12-diagnostics}
+boot_id=$(cat "$root/proc/sys/kernel/random/boot_id" 2>/dev/null || echo unknown)
+out=$out_dir/sync-checks-$boot_id.txt
+mkdir -p "$out_dir"
+
+section() { printf '\n== %s\n' "$1"; }
+show() { for f in "$@"; do [ -r "$f" ] && printf '%s: %s\n' "${f#"$root"}" "$(tr '\n' ' ' <"$f")"; done; }
+
+{
+  section "build and boot"
+  grep -E '^(BUILD_ID|VERSION)=' "$root/etc/os-release" 2>/dev/null
+  echo "boot_id: $boot_id"
+  show "$root/proc/cmdline" "$root/proc/uptime"
+  systemd-analyze time 2>&1 | head -n 2
+  systemctl --failed --no-legend --no-pager 2>&1
+
+  section "upstream sync impacts (BACKLOG)"
+  echo "systemd-oomd: $(systemctl is-enabled systemd-oomd.service 2>&1) (expect masked)"
+  echo "games.slice: $(systemctl show -p ActiveState --value games.slice 2>&1)"
+  show "$root/sys/fs/cgroup/system.slice/memory.low" "$root/sys/fs/cgroup/system.slice/memory.min"
+  echo "udev-trigger-late: $(systemctl show -p ActiveState,Result --value udev-trigger-late.service 2>&1 | tr '\n' ' ')"
+  ls "$root/sys/class/power_supply" 2>/dev/null | tr '\n' ' '; echo
+  show "$root/sys/class/power_supply/battery/capacity" "$root/sys/class/power_supply/usb/online"
+
+  section "splash (B12, polish)"
+  if [ -e "$root/dev/fb0" ]; then echo "fbdev: present"; else echo "fbdev: absent"; fi
+  grep -qw a12_kms_splash "$root/proc/cmdline" 2>/dev/null && echo "a12_kms_splash: on" || echo "a12_kms_splash: off"
+  show "$root/storage/.cache/a12-splash/boot-seconds" "$root/storage/.cache/a12-splash/stamp"
+  ls -l "$root/usr/share/a12-splash/logo.bmp" 2>&1
+  journalctl -b --no-pager -o short-monotonic -u a12-splash -u a12-splash-stopping 2>&1 | tail -n 20
+
+  section "memory (CMA, journal, zram, B9)"
+  grep -E '^(MemTotal|MemAvailable|CmaTotal|CmaFree|SwapTotal|SwapFree|Shmem):' "$root/proc/meminfo" 2>/dev/null
+  du -sk "$root/run/log/journal" 2>/dev/null
+  show "$root/sys/block/zram0/comp_algorithm" "$root/sys/block/zram0/recomp_algorithm" \
+    "$root/sys/block/zram0/mm_stat" "$root/sys/block/zram0/mem_limit" "$root/proc/sys/vm/swappiness"
+  systemctl list-timers --no-pager rocknix-memory-recompress.timer 2>&1 | head -n 3
+  journalctl -b --no-pager -o short-monotonic -u rocknix-memory-recompress 2>&1 | tail -n 6
+
+  section "SD and PL330 (B4)"
+  if [ -e "$root/proc/device-tree/mmc@10214000/dmas" ]; then echo "SD mode: DMA"; else echo "SD mode: PIO (A12_SD_DMA=no build)"; fi
+  dmesg 2>/dev/null | grep -iE 'pl330|dwmmc|dw_mci|underflow|mmc0' | tail -n 20
+  grep -E 'mmc|pl330|dma|ehci|ohci|usb' "$root/proc/interrupts" 2>/dev/null
+
+  section "ES (queue 5)"
+  grep -o 'name="PowerSaverMode" value="[^"]*"' "$root/storage/.config/emulationstation/es_settings.cfg" 2>/dev/null \
+    || echo "PowerSaverMode: not set on this card (ES default \"default\")"
+  top -b -n 1 2>/dev/null | grep -E 'emulationstation|CPU:' | head -n 3
+
+  section "diagnostics"
+  ls "$out_dir" "$out_dir/prev" 2>&1 | head -n 20
+
+  if [ "${1:-}" = idle ]; then
+    section "idle samples (do not touch the device)"
+    for minute in 0 5 10 15 20; do
+      [ "$minute" = 0 ] || sleep 300
+      printf 't+%smin %s | %s\n' "$minute" "$(cat "$root/sys/block/zram0/mm_stat" 2>/dev/null)" \
+        "$(grep -E '^MemAvailable:' "$root/proc/meminfo" | tr -s ' ')"
+    done
+  fi
+} >"$out.new" 2>&1
+mv "$out.new" "$out"
+sync
+echo "$out"

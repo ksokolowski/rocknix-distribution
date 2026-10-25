@@ -13,6 +13,10 @@ PKG_CONFIGURE_OPTS_TARGET="${PKG_CONFIGURE_OPTS_TARGET/--enable-hashmap/--disabl
 PKG_CONFIGURE_OPTS_TARGET="${PKG_CONFIGURE_OPTS_TARGET/--disable-home-terminfo/--enable-home-terminfo}"
 PKG_CONFIGURE_OPTS_TARGET+=" --enable-lib-suffixes"
 PKG_CONFIGURE_OPTS_HOST+=" --without-tests"
+# The host build only provides libraries to build tools; 6.6 otherwise
+# installs its terminfo database into the build container's /usr/share,
+# which an unprivileged build cannot write.
+PKG_CONFIGURE_OPTS_HOST+=" --disable-db-install"
 
 eval "core_$(declare -f pre_configure_target)"
 pre_configure_target() {

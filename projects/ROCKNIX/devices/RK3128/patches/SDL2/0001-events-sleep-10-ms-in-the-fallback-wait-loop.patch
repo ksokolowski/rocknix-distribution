@@ -1,0 +1,31 @@
+Subject: [PATCH] events: sleep 10 ms in the fallback wait loop
+
+Without a video backend that can wait for events (KMSDRM has no
+WaitEventTimeout), SDL_WaitEventTimeout() pumps events and sleeps
+EVENT_POLL_INTERVAL_MS (1 ms) until the timeout: about 1000 wakeups a
+second while an application waits. On the Powkiddy A12 (Cortex-A7,
+EmulationStation idle at its menu) that loop kept ≈4 % of a core busy
+in poll() (TEST_LOG tests 59–60). Sleep 10 ms in that loop only; event
+latency while waiting stays below a 60 Hz frame, and the sensor and
+joystick polling intervals are unchanged.
+
+--- a/src/events/SDL_events.c
++++ b/src/events/SDL_events.c
+@@ -42,6 +42,8 @@
+ 
+ /* Determines how often to pump events if joysticks or sensors are actively being read */
+ #define EVENT_POLL_INTERVAL_MS 1
++/* SDL_WaitEventTimeout() without a backend wait (KMSDRM): pump this often. */
++#define EVENT_WAIT_FALLBACK_INTERVAL_MS 10
+ 
+ typedef struct SDL_EventWatcher
+ {
+@@ -1144,7 +1146,7 @@
+                 /* Timeout expired and no events */
+                 return 0;
+             }
+-            SDL_Delay(EVENT_POLL_INTERVAL_MS);
++            SDL_Delay(EVENT_WAIT_FALLBACK_INTERVAL_MS);
+             break;
+         default:
+             /* Has events */

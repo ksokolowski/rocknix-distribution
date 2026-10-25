@@ -1,0 +1,17 @@
+# Powkiddy A12 override of the shared unit (installed to /etc/systemd/system):
+# ES no longer waits for the network (owner decision, boot splash plan Task 9).
+# The shared unit orders after network.target and graphical.target; the
+# latter waits for multi-user.target -> sshd -> network.target as well.
+[Unit]
+Description=ROCKNIX user autostart script
+Before=emustation.service weston.service
+After=basic.target userconfig.service
+
+[Service]
+Type=oneshot
+Environment=HOME=/storage
+ExecStart=/bin/bash -a -c 'source /etc/profile && exec /usr/bin/autostart'
+RemainAfterExit=yes
+
+[Install]
+WantedBy=rocknix.target

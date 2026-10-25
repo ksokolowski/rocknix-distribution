@@ -39,5 +39,17 @@ then
   VOLUME=50
 fi
 
-pactl -- set-sink-volume @DEFAULT_SINK@ ${VOLUME}%
+if pactl info >/dev/null 2>&1
+then
+  pactl -- set-sink-volume @DEFAULT_SINK@ ${VOLUME}%
+else
+  ### No Pulse server: ALSA softvol "Master" (PIPEWIRE_SUPPORT=no devices).
+  ### softvol creates the control when its PCM first opens; open it once
+  ### with 20 ms of silence if the control does not exist yet.
+  if ! amixer -q sset Master ${VOLUME}% 2>/dev/null
+  then
+    head -c 3840 /dev/zero | aplay -q -t raw -f S32_LE -r 48000 -c 2 2>/dev/null
+    amixer -q sset Master ${VOLUME}%
+  fi
+fi
 set_setting "audio.volume" ${VOLUME}

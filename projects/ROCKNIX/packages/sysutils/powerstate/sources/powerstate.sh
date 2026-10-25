@@ -36,7 +36,8 @@ while true; do
       ;;
       *)
         log $0 "Switching to performance mode."
-        gpu_performance_level auto
+        GPUPROFILE=$(cat /tmp/.gpu_performance_level 2>/dev/null || :)
+        gpu_performance_level "${GPUPROFILE:-auto}"
         if [ "${DEVICE_LED_CHARGING}" = "true" ]; then
           ledcontrol charging
         fi
@@ -46,6 +47,10 @@ while true; do
   fi
   ### Until we have an overlay. :rofl:
   BATLEFT=$(battery_percent)
+  if ! [[ "${BATLEFT}" =~ ^[0-9]+$ ]]; then
+    sleep 2
+    continue
+  fi
   if (( "${BATCNT}" >= "20" )) && [[ "${AC_STATUS}" =~ Disch ]]; then
     AUDIBLEALERT=$(get_setting system.battery.warning)
     AUDIBLEALERT_THRESHOLD=$(get_setting system.battery.warning_threshold)

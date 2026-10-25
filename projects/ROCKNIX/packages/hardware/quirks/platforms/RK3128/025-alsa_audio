@@ -1,0 +1,11 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0
+# Copyright (C) 2026-present ROCKNIX (https://github.com/ROCKNIX)
+
+# The A12 image has no PipeWire (PIPEWIRE_SUPPORT=no): move RetroArch
+# configs created before that from the Pulse driver to ALSA.
+RA_CFG="/storage/.config/retroarch/retroarch.cfg"
+if [ -f "${RA_CFG}" ] && grep -q '^audio_driver = "pulse"$' "${RA_CFG}"
+then
+  sed -i 's/^audio_driver = "pulse"$/audio_driver = "alsa"/' "${RA_CFG}"
+fi

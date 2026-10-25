@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: GPL-2.0
+
+mkimage_uboot_device() {
+  local bootdir="${RELEASE_DIR}/3rdparty/bootloader"
+  local file offset limit size
+  for file in idbloader.img uboot.img trust.img; do
+    case "$file" in
+      idbloader.img) offset=64; limit=$((8 * 1024 * 1024 - 32768)) ;;
+      uboot.img) offset=16384; limit=$((4 * 1024 * 1024)) ;;
+      trust.img) offset=24576; limit=$((4 * 1024 * 1024)) ;;
+    esac
+    size=$(stat -c %s "${bootdir}/${file}") || show_error
+    if [ "$size" -gt "$limit" ] || [ "${SYSTEM_PART_START}" -lt 32768 ]; then
+      echo "RK3128 bootloader overlaps the next image region" >"${SAVE_ERROR}"
+      show_error
+    fi
+    dd if="${bootdir}/${file}" of="${DISK}" bs=512 seek="$offset" \
+      conv=fsync,notrunc >"${SAVE_ERROR}" 2>&1 || show_error
+  done
+}
+
+. "${PROJECT_DIR}/${PROJECT}/bootloader/mkimage"

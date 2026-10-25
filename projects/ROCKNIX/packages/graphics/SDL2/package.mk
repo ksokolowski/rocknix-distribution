@@ -69,6 +69,7 @@ else
 fi
 
 case ${DEVICE} in
+  RK3128) ;;
   RK*) PKG_DEPENDS_TARGET+=" librga" ;;
 esac
 

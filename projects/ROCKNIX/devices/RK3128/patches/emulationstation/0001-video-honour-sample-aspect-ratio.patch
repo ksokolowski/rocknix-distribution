@@ -1,0 +1,41 @@
+Subject: [PATCH] VideoVlcComponent: honour the video's sample aspect ratio
+
+ES sized the RGBA frames it asks VLC for from the track's coded width and
+height and ignored the sample aspect ratio. Scraped MAME previews with
+non-square pixels then show distorted: galaxian is coded 224x768 with an
+18:7 sample aspect (display 3:4) and appeared as a thin vertical strip;
+galaga (224x288, 27:28) was 4 % too narrow.
+
+Apply the sample aspect by shrinking one side, so the requested frame has
+the display aspect and never more pixels than the source.
+--- a/es-core/src/components/VideoVlcComponent.cpp
++++ b/es-core/src/components/VideoVlcComponent.cpp
+@@ -9,6 +9,20 @@
+ #include <vlc/libvlc_version.h>
+ #include <SDL_mutex.h>
+ #include <cmath>
++
++// Apply a video track's sample (pixel) aspect ratio by shrinking one side,
++// so the RGBA frames requested from VLC have the picture's display aspect
++// and never more pixels than the source (scraped MAME previews such as
++// galaxian are stored 224x768 with an 18:7 sample aspect).
++static void applySampleAspect(unsigned& width, unsigned& height, unsigned sarNum, unsigned sarDen)
++{
++	if (sarNum == 0 || sarDen == 0 || sarNum == sarDen || width == 0 || height == 0)
++		return;
++	if (sarNum > sarDen)
++		height = std::max(1u, (unsigned)((unsigned long long)height * sarDen / sarNum));
++	else
++		width = std::max(1u, (unsigned)((unsigned long long)width * sarNum / sarDen));
++}
+ #include "SystemConf.h"
+ #include "ThemeData.h"
+ #include <SDL_timer.h>
+@@ -750,6 +764,7 @@
+ 		{
+ 			mVideoWidth = tracks[track]->video->i_width;
+ 			mVideoHeight = tracks[track]->video->i_height;
++			applySampleAspect(mVideoWidth, mVideoHeight, tracks[track]->video->i_sar_num, tracks[track]->video->i_sar_den);
+ 
+ 			if (hasAudioTrack)
+ 				break;

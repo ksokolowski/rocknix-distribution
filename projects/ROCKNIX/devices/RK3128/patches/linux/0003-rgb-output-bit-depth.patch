@@ -1,0 +1,16 @@
+Subject: [PATCH] drm/rockchip: pass RGB connector bit depth to the VOP
+
+The A12 panel advertises six bits per component. Without output_bpc the
+VOP defaults to ten and disables the RGB888-to-RGB666 dithering selected
+by the working KNULLI VOP driver. Preserve the connector's bit depth.
+
+--- a/drivers/gpu/drm/rockchip/rockchip_rgb.c
++++ b/drivers/gpu/drm/rockchip/rockchip_rgb.c
+@@ -61,6 +61,7 @@
+ 	}
+ 
+ 	s->output_type = DRM_MODE_CONNECTOR_LVDS;
++	s->output_bpc = info->bpc;
+ 
+ 	return 0;
+ }

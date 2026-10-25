@@ -1,0 +1,210 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Run on A12. zram/VM A/B with the frontend resident, as in play:
+# EmulationStation launches a temporary port that runs fixed, silent
+# workloads (Final Fight in RetroArch, Olduvai Classic and HD replays).
+#   a12-zram-ab arm ARM       rebuild zram0 (256 MiB, priority 100) for ARM:
+#       a compressor name (lzo-rle, lz4, zstd, ...) or one variant of the
+#       A12 baseline (lzo-rle, swappiness 100, MGLRU off, boost 15000):
+#       base, recomp (zstd recompression of idle pages after RetroArch),
+#       swap180, mglru, wboost0, rgb565 (base zram; RetroArch with
+#       RETROARCH_KMS_RGB565=1, A12 RetroArch patch)
+#   a12-zram-ab run OUT [ARM...]   alternate arms, default lzo-rle/zstd x3
+#   a12-zram-ab workload OUT LABEL  (called by the port; not for direct use)
+set -eu
+here=$(cd "$(dirname "$0")" && pwd)
+bench=/storage/bench
+port=/storage/roms/ports/zz-a12-zram-bench.sh
+api=http://127.0.0.1:1234
+
+die() { echo "$*" >&2; exit 1; }
+
+vm_baseline() {
+    echo 100 > /proc/sys/vm/swappiness
+    echo 15000 > /proc/sys/vm/watermark_boost_factor
+    echo n > /sys/kernel/mm/lru_gen/enabled
+}
+
+arm() {
+    spec=$1; algo=lzo-rle; recomp=
+    case $spec in
+        base|swap180|mglru|wboost0|rgb565) ;;
+        recomp) recomp=zstd ;;
+        *) algo=$spec ;;
+    esac
+    grep -qw "$algo" /sys/block/zram0/comp_algorithm || die "no $algo in zram"
+    vm_baseline
+    swapoff /dev/zram0
+    echo 1 > /sys/block/zram0/reset
+    echo "$algo" > /sys/block/zram0/comp_algorithm
+    # The secondary algorithm must be set before disksize initialises zram.
+    [ -z "$recomp" ] || echo "algo=$recomp priority=1" > /sys/block/zram0/recomp_algorithm
+    echo $((256 * 1024 * 1024)) > /sys/block/zram0/disksize
+    mkswap /dev/zram0 >/dev/null
+    swapon -p 100 /dev/zram0
+    grep -q "\[$algo\]" /sys/block/zram0/comp_algorithm || die "zram not on $algo"
+    case $spec in
+        swap180) echo 180 > /proc/sys/vm/swappiness ;;
+        mglru) echo y > /sys/kernel/mm/lru_gen/enabled ;;
+        wboost0) echo 0 > /proc/sys/vm/watermark_boost_factor ;;
+    esac
+}
+
+snapshot() {
+    cat /proc/uptime
+    awk '/^(MemFree|MemAvailable|Cached|SwapFree|AnonPages|Shmem):/' /proc/meminfo
+    awk '/^(pswpin|pswpout|pgmajfault|pgfault|pgsteal_kswapd|pgsteal_direct|allocstall_normal|allocstall_movable) /' /proc/vmstat
+    printf 'psi_memory: '; tr '\n' ' ' < /proc/pressure/memory; echo
+    printf 'psi_io: '; tr '\n' ' ' < /proc/pressure/io; echo
+    printf 'mm_stat: '; cat /sys/block/zram0/mm_stat
+    printf 'comp: '; cat /sys/block/zram0/comp_algorithm
+    printf 'recomp: '; tr '\n' ' ' < /sys/block/zram0/recomp_algorithm; echo
+    printf 'vm: swappiness=%s boost=%s lru_gen=%s\n' "$(cat /proc/sys/vm/swappiness)" \
+        "$(cat /proc/sys/vm/watermark_boost_factor)" "$(cat /sys/kernel/mm/lru_gen/enabled)"
+    for pid in $(pidof emulationstation); do
+        printf 'es: '; awk '/^(VmRSS|VmSwap):/ {printf "%s %s ", $1, $2}' "/proc/$pid/status"; echo
+    done
+    printf 'kswapd_ticks: '; awk '{print $14 + $15}' "/proc/$(pidof kswapd0)/stat"
+}
+
+# In-step memory sample every 2 s: CMA, free memory, ES and the game process
+# (PSS, swap, Lima GPU memory from fdinfo). One line per sample.
+sample_loop() {
+    while :; do
+        line=$(awk '/^(MemAvailable|Shmem|AnonPages|SwapFree|CmaFree|Unevictable):/ {printf "%s=%s ", $1, $2}' /proc/meminfo)
+        for pid in $(pidof emulationstation retroarch olduvai-348e56a.armhf); do
+            comm=$(cat "/proc/$pid/comm" 2>/dev/null) || continue
+            pss=$(awk '/^(Pss|SwapPss):/ {printf "%s%s ", $1, $2}' "/proc/$pid/smaps_rollup" 2>/dev/null)
+            # One Lima client can sit on several fds; count each client once.
+            gpu=$(cat /proc/$pid/fdinfo/* 2>/dev/null | awk '/^drm-client-id:/ {id = $2} /^drm-total-memory:/ && !seen[id]++ {t += $2} END {print t + 0}')
+            line="$line| $comm $pss gpu_kib=$gpu "
+        done
+        printf '%s %s\n' "$(cut -d' ' -f1 /proc/uptime)" "$line"
+        sleep 2
+    done
+}
+
+workload() {
+    out=$1; label=$2
+    . /etc/profile >/dev/null 2>&1 || true
+    dir=$out/$label
+    mkdir -p "$dir/saves" "$dir/states" "$dir/config"
+    cat > "$dir/override.cfg" <<CONFIG
+config_save_on_exit = "false"
+auto_overrides_enable = "false"
+auto_remaps_enable = "false"
+content_history_enable = "false"
+content_runtime_log = "false"
+video_vsync = "false"
+fps_show = "false"
+savestate_auto_load = "false"
+savestate_auto_save = "false"
+savefile_directory = "$dir/saves"
+savestate_directory = "$dir/states"
+audio_enable = "false"
+audio_sync = "false"
+audio_driver = "null"
+CONFIG
+    in_olduvai() { cd /storage/roms/ports/olduvai && "$@"; }
+    step() {
+        name=$1; shift
+        snapshot > "$dir/$name-before.txt"
+        sample_loop > "$dir/$name-samples.txt" 2>/dev/null &
+        sampler=$!
+        "$@" </dev/null > "$dir/$name.log" 2>&1 || echo "exit $?" >> "$dir/$name.log"
+        kill "$sampler" 2>/dev/null; wait "$sampler" 2>/dev/null || true
+        snapshot > "$dir/$name-after.txt"
+    }
+    case $label in *-rgb565) ra_env="RETROARCH_KMS_RGB565=1" ;; *) ra_env="RETROARCH_KMS_RGB565=0" ;; esac
+    step retroarch env "$ra_env" timeout 240 retroarch -v -L /usr/lib/libretro/fbneo_libretro.so \
+        --config /storage/.config/retroarch/retroarch.cfg --appendconfig "$dir/override.cfg" \
+        --max-frames=2100 --sram-mode=noload-nosave "$bench/ffight.zip"
+    # Quiet point after the game: recompress every stored page with the
+    # secondary algorithm (no per-page access times in this kernel).
+    if [ -n "$(tr -d '\n' < /sys/block/zram0/recomp_algorithm)" ]; then
+        step recompress sh -c 'echo all > /sys/block/zram0/idle && echo type=idle > /sys/block/zram0/recompress'
+    fi
+    for preset in dos-handheld hd-handheld; do
+        step "olduvai-$preset" in_olduvai env \
+            XDG_RUNTIME_DIR=/var/run SDL_AUDIODRIVER=dummy SDL_VIDEODRIVER=kmsdrm \
+            XDG_CONFIG_HOME="$dir/config" OLDUVAI_BUG_DIR="$dir/bugs" \
+            OLDUVAI_DIRTY=1 OLDUVAI_FRAME_STATS=1 OLDUVAI_UNTHROTTLED=1 \
+            timeout 240 "$bench/olduvai/olduvai-348e56a.armhf" \
+            --game-dir ./game --rom-dir ./mt32-roms --no-config \
+            --default-profile "$preset" --music-device off --play --level 1 \
+            --replay "$bench/olduvai/deep_run_l1_in.jsonl" \
+            --play-frames 600 --transitions classic
+    done
+    touch "$dir/done"
+}
+
+run() {
+    out=$1; shift
+    [ $# -gt 0 ] || set -- lzo-rle zstd zstd lzo-rle lzo-rle zstd
+    [ "$(id -u)" = 0 ] || die 'Run as root.'
+    . /etc/profile >/dev/null 2>&1 || true
+    [ ! -e "$out" ] || die "$out exists"
+    curl -sf "$api/runningGame" | grep -q 'NO GAME RUNNING' || die 'A game is running.'
+    test -r "$bench/olduvai/fonts/FreckleFace-Regular.ttf"
+    mkdir -p "$out/player-config"
+    # RetroArch saves core options on exit; keep the player's files untouched.
+    opts="/storage/.config/retroarch/config/FinalBurn Neo"
+    cp -a "$opts" "$out/player-config/"
+    sha256sum /flash/KERNEL /usr/lib/libretro/fbneo_libretro.so "$bench/ffight.zip" \
+        "$bench/olduvai/olduvai-348e56a.armhf" "$bench/olduvai/deep_run_l1_in.jsonl" \
+        > "$out/inputs.sha256"
+    cat /proc/sys/kernel/random/boot_id /proc/cmdline /sys/class/devfreq/dmc/cur_freq > "$out/boot.txt"
+    # Silent: workloads disable audio; also mute the sink in case a path ignores that.
+    # With PipeWire mute the sink; ALSA-only (softvol "Master") has no
+    # mute switch, so drop it to 0 % and restore the saved level.
+    if pactl info >/dev/null 2>&1; then
+        muted=$(pactl get-sink-mute @DEFAULT_SINK@ | awk '{print $2}')
+        pactl set-sink-mute @DEFAULT_SINK@ 1
+    else
+        muted=alsa:$(amixer -c 0 sget Master | sed -n 's/.*\[\([0-9]*%\)\].*/\1/p' | head -1)
+        amixer -q -c 0 sset Master 0%
+    fi
+    cleanup() {
+        rm -f "$port"
+        rm -rf "$opts" && cp -a "$out/player-config/FinalBurn Neo" "$opts"
+        curl -s "$api/reloadgames" >/dev/null || true
+        arm base || true
+        case $muted in
+            alsa:*) amixer -q -c 0 sset Master "${muted#alsa:}" ;;
+            yes) ;;
+            *) pactl set-sink-mute @DEFAULT_SINK@ 0 ;;
+        esac
+    }
+    trap cleanup EXIT
+    trap 'exit 130' INT TERM HUP
+    printf '#!/bin/bash\nexec %q workload %q "$(cat %q)"\n' "$here/a12-zram-ab" "$out" "$out/current" > "$port"
+    chmod 0755 "$port"
+    curl -s "$api/reloadgames" >/dev/null
+    sleep 5
+    n=0
+    for spec in "$@"; do
+        n=$((n + 1)); label=$n-$spec
+        echo "ARM $label"
+        arm "$spec"
+        echo "$label" > "$out/current"
+        snapshot > "$out/$label-armed.txt"
+        curl -s -d "$port" "$api/launch" > "$out/$label-launch.txt"
+        waited=0
+        until [ -e "$out/$label/done" ]; do
+            sleep 5; waited=$((waited + 5))
+            [ "$waited" -lt 900 ] || die "$label did not finish"
+        done
+        until curl -sf "$api/runningGame" | grep -q 'NO GAME RUNNING'; do sleep 2; done
+        sleep 10
+        echo "DONE $label"
+    done
+    touch "$out/complete"
+    echo 'ALL COMPLETE'
+}
+
+case ${1:-} in
+    arm) arm "$2" ;;
+    run) shift; run "$@" ;;
+    workload) workload "$2" "$3" ;;
+    *) die 'Usage: a12-zram-ab arm ARM | run OUT [ARM...]' ;;
+esac

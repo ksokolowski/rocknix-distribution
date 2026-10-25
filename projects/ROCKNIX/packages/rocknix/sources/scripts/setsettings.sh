@@ -28,6 +28,7 @@ LOCK_FILE="/tmp/.retroarch.lock"
 
 PLATFORM=${1,,}
 ROM="${2##*/}"
+ROM_FOLDER="$(basename -- "$(dirname -- "$2")")"
 CORE=${3,,}
 
 
@@ -347,7 +348,7 @@ EOF
 ### Configure retroarch hotkeys
 function configure_hotkeys() {
     log "Configure hotkeys..."
-    local MY_CONTROLLER
+    local MY_CONTROLLER MENU_TOGGLE_BTN
 
     if grep -q "Sony Interactive Entertainment DualSense Wireless Controller" /proc/bus/input/devices; then
         # InputPlumber virtual DS5
@@ -368,6 +369,12 @@ function configure_hotkeys() {
             cp /tmp/joypads/"${MY_CONTROLLER}.cfg" /tmp
             sed -i "s# = #=#g" /tmp/"${MY_CONTROLLER}.cfg"
             source /tmp/"${MY_CONTROLLER}.cfg"
+            MENU_TOGGLE_BTN="${input_x_btn}"
+            # RetroArch opens the menu on Guide release and cancels it for
+            # other hotkey chords. A12's physical Back is Guide (button 8).
+            if [ "${HW_DEVICE}" = "RK3128" ] && [ "${MY_CONTROLLER}" = "stick" ]; then
+                MENU_TOGGLE_BTN="${input_enable_hotkey_btn}"
+            fi
             for HKEYSETTING in input_enable_hotkey_btn input_bind_hold            \
                                input_exit_emulator_btn input_fps_toggle_btn       \
                                input_menu_toggle_btn input_save_state_btn         \
@@ -388,7 +395,7 @@ function configure_hotkeys() {
 input_bind_hold = "${input_select_btn}"
 input_exit_emulator_btn = "${input_start_btn}"
 input_fps_toggle_btn = "${input_y_btn}"
-input_menu_toggle_btn = "${input_x_btn}"
+input_menu_toggle_btn = "${MENU_TOGGLE_BTN}"
 input_save_state_btn = "${input_r_btn}"
 input_load_state_btn = "${input_l_btn}"
 EOF
@@ -696,7 +703,7 @@ function set_rgascale() {
 function set_shader() {
     local SHADER="$(game_setting shaderset)"
     case ${SHADER} in
-        0|false|none)
+        ''|0|false|none)
             add_setting "none" "video_shader_enable" "false"
         ;;
         *)
@@ -710,7 +717,7 @@ function set_shader() {
 function set_filter() {
     local FILTER="$(game_setting videofilter)"
     case ${FILTER} in
-        0|false|none)
+        ''|0|false|none)
             add_setting "none" "video_filter" ""
         ;;
         *)
@@ -852,7 +859,53 @@ function set_latency() {
 }
 
 function set_audiolatency() {
-    add_setting "audiolatency" "audio_latency"
+    local AUDIO_LATENCY="$(game_setting audiolatency)"
+    if [ -z "${AUDIO_LATENCY}" ]; then
+        AUDIO_LATENCY="${DEVICE_AUDIO_LATENCY:-}"
+    fi
+    add_setting "none" "audio_latency" "${AUDIO_LATENCY}"
+}
+
+function set_fbneoopts() {
+    # Compiling Cyclone does not select it: FBNeo defaults to its C interpreter.
+    # Limit the A12 default to CPS1; other boards and explicit game options remain.
+    [ "${HW_DEVICE}" = "RK3128" ] && [ "${PLATFORM}" = "cps1" ] && \
+        [ "${CORE}" = "fbneo" ] || return 0
+
+    local OPTIONS_DIR="${RETROARCH_PATH}/config/FinalBurn Neo"
+    local FOLDER_OPTIONS="${OPTIONS_DIR}/${ROM_FOLDER}.opt"
+    local CORE_OPTIONS="${OPTIONS_DIR}/FinalBurn Neo.opt"
+    local GAME_OPTIONS="${OPTIONS_DIR}/${ROM%.*}.opt"
+    local CYCLONE="$(game_setting fbneo_cyclone)"
+
+    case "${CYCLONE}" in
+        ""|enabled|disabled) ;;
+        *) log "Invalid FBNeo Cyclone setting: ${CYCLONE}"; return 1 ;;
+    esac
+
+    if [ ! -f "${FOLDER_OPTIONS}" ]; then
+        mkdir -p "${OPTIONS_DIR}"
+        # Folder options replace core options, so retain existing DIP/audio values.
+        if [ -f "${CORE_OPTIONS}" ]; then
+            cp "${CORE_OPTIONS}" "${FOLDER_OPTIONS}"
+        elif [ -f "${RETROARCH_PATH}/retroarch-core-options.cfg" ]; then
+            cp "${RETROARCH_PATH}/retroarch-core-options.cfg" "${FOLDER_OPTIONS}"
+        else
+            touch "${FOLDER_OPTIONS}"
+        fi
+        CYCLONE="${CYCLONE:-enabled}"
+    fi
+
+    # Leave subsequent choices in RetroArch intact unless system.cfg overrides them.
+    if [ -n "${CYCLONE}" ]; then
+        sed -i '/^[[:space:]]*fbneo-cyclone[[:space:]]*=/d' "${FOLDER_OPTIONS}"
+        printf 'fbneo-cyclone = "%s"\n' "${CYCLONE}" >>"${FOLDER_OPTIONS}"
+    fi
+
+    local ACTIVE_OPTIONS="${FOLDER_OPTIONS}"
+    [ ! -f "${GAME_OPTIONS}" ] || ACTIVE_OPTIONS="${GAME_OPTIONS}"
+    CYCLONE="$(sed -n 's/^[[:space:]]*fbneo-cyclone[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "${ACTIVE_OPTIONS}")"
+    log "FBNeo Cyclone: ${CYCLONE:-disabled} (${ACTIVE_OPTIONS})"
 }
 
 function set_analogsupport() {
@@ -1313,6 +1366,7 @@ configure_hotkeys
 
 set_atari &
 set_gambatte &
+set_fbneoopts
 
 wait
 flush_settings

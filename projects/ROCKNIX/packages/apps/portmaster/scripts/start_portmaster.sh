@@ -43,6 +43,19 @@ if [ -f /storage/roms/ports/PortMaster/tasksetter ]; then
 fi
 
 #Use PortMasters gptokeyb
+case "$(uname -m)" in
+  armv7*|armv8l)
+    mkdir -p /storage/.cache/portmaster/tmp
+    export TMPDIR=/storage/.cache/portmaster/tmp
+    for helper in gptokeyb gptokeyb2 sdl2imgshow sdl_resolution innoextract xdelta3 7zzs; do
+      if [ -f "/storage/roms/ports/PortMaster/${helper}.armhf" ]; then
+        cp -f "/storage/roms/ports/PortMaster/${helper}.armhf" "/storage/roms/ports/PortMaster/${helper}"
+        chmod +x "/storage/roms/ports/PortMaster/${helper}"
+      fi
+    done
+    ;;
+esac
+
 rm gptokeyb
 cp /storage/roms/ports/PortMaster/gptokeyb gptokeyb
 

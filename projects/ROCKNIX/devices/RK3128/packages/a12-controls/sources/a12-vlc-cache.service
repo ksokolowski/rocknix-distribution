@@ -1,0 +1,13 @@
+[Unit]
+Description=Video player plugin cache
+RequiresMountsFor=/storage
+Before=emustation.service
+ConditionPathExists=/usr/lib/vlc/vlc-cache-gen
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/a12-vlc-cache
+
+[Install]
+WantedBy=rocknix.target

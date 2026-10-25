@@ -1,0 +1,10 @@
+Reflectron and Santatlantean (PC Engine)
+by Andrew Darovich, Aetherbyte (http://www.aetherbyte.com/)
+
+Free homebrew, included as Batocera distributes it
+(https://github.com/batocera-linux/batocera.linux, commit
+5f6d4f30fa6245c7f4a38bd18f3fd876e42be720,
+package/batocera/emulationstation/batocera-es-system/roms).
+All rights remain with the author. If you are the author and want it
+removed from this image, open an issue at
+https://github.com/ksokolowski/rocknix-distribution/issues

@@ -11,6 +11,11 @@ PKG_LONGDESC="Zero config VPN. Installs on any device in minutes, manages firewa
 PKG_TOOLCHAIN="manual"
 
 case ${TARGET_ARCH} in
+  arm)
+    TS_ARCH="_arm"
+    PKG_SHA256="3de36af9fa58f465113bc7cfce7cdb5eb7fc2d99d24b48febd819672916b58ac"
+    PKG_SOURCE_NAME="tailscale-${PKG_VERSION}_arm.tgz"
+  ;;
   aarch64)
     TS_ARCH="_arm64"
     PKG_SHA256="53eb3ce89d062fd34e393d24a6c8ec08c769fede8eb77fe9c6e347ad4ae00f84"
@@ -25,7 +30,7 @@ PKG_URL="https://pkgs.tailscale.com/stable/tailscale_${PKG_VERSION}${TS_ARCH}.tg
 
 pre_unpack() {
   mkdir -p ${PKG_BUILD}
-  tar --strip-components=1 -xf $SOURCES/${PKG_NAME}/${PKG_NAME}-${PKG_VERSION}.tgz -C ${PKG_BUILD} tailscale_${PKG_VERSION}${TS_ARCH}
+  tar --strip-components=1 -xf "${SOURCES}/${PKG_NAME}/${PKG_SOURCE_NAME:-${PKG_NAME}-${PKG_VERSION}.tgz}" -C ${PKG_BUILD} tailscale_${PKG_VERSION}${TS_ARCH}
 }
 
 makeinstall_target() {
@@ -36,4 +41,3 @@ makeinstall_target() {
   mkdir -p ${INSTALL}/usr/config
     cp -R ${PKG_DIR}/config/tailscaled.defaults ${INSTALL}/usr/config
 }
-

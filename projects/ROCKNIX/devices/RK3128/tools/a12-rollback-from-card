@@ -1,0 +1,12 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Usage (card in host reader): a12-rollback-from-card FAT_MOUNT STORAGE_MOUNT [STAMP]
+set -euo pipefail
+fat=$1; storage=$2
+set_dir=$storage/.a12-rollback/${3:-$(ls "$storage/.a12-rollback" | sort | tail -n 1)}
+(cd "$set_dir" && sha256sum -c SHA256SUMS)
+cp "$set_dir/KERNEL" "$set_dir/KERNEL.md5" "$set_dir/SYSTEM" "$set_dir/SYSTEM.md5" "$fat/"
+cp "$set_dir/extlinux.conf" "$fat/extlinux/"
+cp "$set_dir/rk3128-powkiddy-a12-rev-a.dtb" "$fat/device_trees/"
+sync
+(cd "$fat" && sha256sum KERNEL SYSTEM) && echo "restored $set_dir"

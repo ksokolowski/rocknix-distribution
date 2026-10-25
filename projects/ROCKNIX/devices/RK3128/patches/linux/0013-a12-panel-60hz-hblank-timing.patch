@@ -1,0 +1,44 @@
+Subject: [PATCH] drm/panel: A12 defaults to 60 Hz with the 60-hblank timing
+
+The refresh_60hz mode added 19 vertical blanking lines (vtotal 664); on
+the Powkiddy A12 that made the picture shake. Keep the native vertical
+timing and add horizontal blanking instead (htotal 1395): 54 MHz /
+(1395 x 645) = 60.015 Hz, the 60-hblank trial that removed the shaking.
+Its remaining black lines were the bootloader LCDC QoS setting, fixed in
+U-Boot since.
+
+At 60 Hz every 60 fps game frame is shown exactly once, where the native
+~85 Hz mode alternates one and two refreshes, and Olduvai HD presents
+faster (TEST_LOG test 49). Make it the default; refresh_60hz=0 selects
+the native mode.
+--- a/drivers/gpu/drm/panel/panel-a12.c
++++ b/drivers/gpu/drm/panel/panel-a12.c
+@@ -12,9 +12,9 @@
+ #include <drm/drm_panel.h>
+ #include <linux/media-bus-format.h>
+ 
+-static bool refresh_60hz;
++static bool refresh_60hz = true;
+ module_param(refresh_60hz, bool, 0444);
+-MODULE_PARM_DESC(refresh_60hz, "Prefer experimental 60 Hz timing (default: native timing)");
++MODULE_PARM_DESC(refresh_60hz, "Prefer the 60 Hz (60-hblank) timing; 0 selects the native ~85 Hz timing (default: 60 Hz)");
+ 
+ struct a12_panel {
+ 	struct drm_panel panel;
+@@ -84,11 +84,13 @@
+ 		.flags = DRM_MODE_FLAG_NHSYNC | DRM_MODE_FLAG_NVSYNC,
+ 		.type = DRM_MODE_TYPE_DRIVER | DRM_MODE_TYPE_PREFERRED,
+ 	};
+-	/* 594 MHz / 11; panel acceptance still needs a revision A hardware test. */
++	/* 60-hblank: 54 MHz (GPLL 594 MHz / 11) with the native vertical timing
++	 * and 41 more horizontal blanking clocks, 60.015 Hz. The earlier
++	 * vtotal 664 variant made the panel shake (TEST_LOG 2026-10-10). */
+ 	static const struct drm_display_mode experimental = {
+ 		.clock = 54000,
+-		.hdisplay = 1024, .hsync_start = 1184, .hsync_end = 1194, .htotal = 1354,
+-		.vdisplay = 600, .vsync_start = 612, .vsync_end = 622, .vtotal = 664,
++		.hdisplay = 1024, .hsync_start = 1184, .hsync_end = 1194, .htotal = 1395,
++		.vdisplay = 600, .vsync_start = 612, .vsync_end = 622, .vtotal = 645,
+ 		.flags = DRM_MODE_FLAG_NHSYNC | DRM_MODE_FLAG_NVSYNC,
+ 		.type = DRM_MODE_TYPE_DRIVER | DRM_MODE_TYPE_PREFERRED,
+ 	};

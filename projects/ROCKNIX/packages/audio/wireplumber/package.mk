@@ -102,5 +102,7 @@ fi
 }
 
 post_install() {
-  enable_service wireplumber.service
+  if [ "${PIPEWIRE_SUPPORT}" = "yes" ]; then
+    enable_service wireplumber.service
+  fi
 }

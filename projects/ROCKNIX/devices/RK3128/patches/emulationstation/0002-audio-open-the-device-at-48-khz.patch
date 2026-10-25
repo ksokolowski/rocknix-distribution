@@ -1,0 +1,19 @@
+Subject: [PATCH] AudioManager: open the audio device at 48 kHz
+
+ES keeps its SDL_mixer device open for navigation sounds and music, so
+it produces audio all the time, silence included. At 44.1 kHz on a
+48 kHz device (the A12's ALSA dmix) every buffer was resampled. Open at
+48 kHz: sound effects are converted once when loaded, music while it
+plays, and idle silence is not resampled (Powkiddy A12, TEST_LOG test 60).
+
+--- a/es-core/src/AudioManager.cpp
++++ b/es-core/src/AudioManager.cpp
+@@ -75,7 +75,7 @@
+ 	}
+ 
+ 	// Open the audio device and pause
+-	if (Mix_OpenAudio(44100, MIX_DEFAULT_FORMAT, 2, 4096) < 0)
++	if (Mix_OpenAudio(48000, MIX_DEFAULT_FORMAT, 2, 4096) < 0)
+ 	{
+ 		mMusicVolume = 0;
+ 		LOG(LogError) << "MUSIC Error - Unable to open SDLMixer audio: " << SDL_GetError() << std::endl;

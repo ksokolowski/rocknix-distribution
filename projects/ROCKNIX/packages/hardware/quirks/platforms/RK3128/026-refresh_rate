@@ -1,0 +1,17 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0
+# Copyright (C) 2026-present ROCKNIX (https://github.com/ROCKNIX)
+
+# RetroArch syncs to the panel refresh. The panel defaults to 60.015 Hz
+# (60-hblank); panel_a12.refresh_60hz=0 selects the native 85.019 Hz mode.
+# Move RetroArch between those two rates to match the active mode; any
+# other rate is the user's choice and stays.
+RA_CFG="/storage/.config/retroarch/retroarch.cfg"
+PANEL_60HZ="/sys/module/panel_a12/parameters/refresh_60hz"
+[ -f "${RA_CFG}" ] && [ -r "${PANEL_60HZ}" ] || exit 0
+if [ "$(cat "${PANEL_60HZ}")" = "Y" ]
+then
+  sed -i 's/^video_refresh_rate = "85.019409"$/video_refresh_rate = "60.015000"/' "${RA_CFG}"
+else
+  sed -i 's/^video_refresh_rate = "60.015000"$/video_refresh_rate = "85.019409"/' "${RA_CFG}"
+fi

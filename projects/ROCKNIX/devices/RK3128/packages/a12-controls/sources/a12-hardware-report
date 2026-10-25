@@ -1,0 +1,213 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+
+printf 'Model: '
+tr -d '\000' </proc/device-tree/model
+printf '\nKernel: '
+uname -r
+printf '\nKernel command line and timer resolution:\n'
+cat /proc/cmdline
+awk '/\.resolution:/' /proc/timer_list
+printf '\nOptional performance experiments:\n'
+if [ -f /storage/.config/a12-game-monitor.enabled ]; then
+  printf 'Game monitor: enabled for new launches\n'
+else
+  printf 'Game monitor: disabled for new launches\n'
+fi
+for path in /sys/module/panel_a12/parameters/refresh_60hz \
+  /sys/kernel/mm/lru_gen/enabled /sys/kernel/mm/lru_gen/min_ttl_ms \
+  /sys/kernel/mm/cma/*/alloc_pages_success \
+  /sys/kernel/mm/cma/*/alloc_pages_fail; do
+  [ -r "$path" ] || continue
+  printf '%s: ' "$path"
+  cat "$path"
+done
+printf '\nMemory and swap:\n'
+cat /proc/meminfo
+cat /proc/swaps
+printf '\nLinux physical memory map:\n'
+cat /proc/iomem
+printf '\nLive device-tree memory banks (big-endian bytes):\n'
+for path in /proc/device-tree/memory*/reg; do
+  [ -r "$path" ] || continue
+  printf '%s: ' "$path"
+  od -An -tx1 "$path"
+done
+printf '\nMemory policy and zram:\n'
+sysctl vm.min_free_kbytes vm.swappiness vm.page-cluster vm.watermark_scale_factor
+for path in /sys/block/zram0/comp_algorithm /sys/block/zram0/recomp_algorithm \
+  /sys/block/zram0/mm_stat /sys/block/zram0/io_stat /sys/block/zram0/disksize \
+  /sys/block/zram0/mem_limit /proc/pressure/memory /proc/buddyinfo; do
+  [ -r "$path" ] || continue
+  printf '%s: ' "$path"
+  cat "$path"
+done
+printf '\nMounted filesystems:\n'
+cat /proc/mounts
+printf '\nLoaded module sizes (bytes; built-in drivers are excluded):\n'
+cat /proc/modules
+printf '\nProcess memory and GPU allocations:\n'
+for process in /proc/[0-9]*; do
+  [ -r "$process/status" ] || continue
+  printf '%s: ' "$process"
+  awk '/^(Name|VmRSS|VmSwap|VmLck):/' "$process/status"
+  awk 'FNR == 1 { gpu = 0 }
+    /^drm-driver:/ { gpu = 1; print FILENAME ":" }
+    gpu { print }' "$process"/fdinfo/* 2>/dev/null
+done
+printf '\nCPU cores:\n'
+cat /sys/devices/system/cpu/online
+cat /proc/cpuinfo
+printf '\nCPU, GPU and DDR frequency policy:\n'
+for path in /sys/devices/system/cpu/cpufreq/policy*/scaling_governor \
+  /sys/devices/system/cpu/cpufreq/policy*/scaling_cur_freq \
+  /sys/devices/system/cpu/cpufreq/policy*/scaling_min_freq \
+  /sys/devices/system/cpu/cpufreq/policy*/scaling_max_freq \
+  /sys/class/devfreq/*/governor /sys/class/devfreq/*/cur_freq \
+  /sys/class/devfreq/*/min_freq /sys/class/devfreq/*/max_freq \
+  /sys/class/devfreq/*/available_governors \
+  /sys/class/devfreq/*/trans_stat; do
+  [ -r "$path" ] || continue
+  printf '%s: ' "$path"
+  cat "$path"
+done
+printf '\nDrivers:\n'
+# panel-a12 and a12-ttl-phy are built in (patch 0010): only their platform
+# driver directories prove them; /sys/module needs a parameter or a module.
+for driver in panel_a12 a12_ttl_phy a12_battery a12_dmc rk312x_codec lima rtl8xxxu rtw88_8822bu r8152; do
+  platform=/sys/bus/platform/drivers/$(echo "$driver" | tr _ -)
+  if [ -d "/sys/module/$driver" ] || [ -d "$platform" ]; then
+    printf '%s: loaded\n' "$driver"
+  else
+    printf '%s: absent\n' "$driver"
+  fi
+done
+printf '\nBattery:\n'
+for attribute in status capacity voltage_now present; do
+  path="/sys/class/power_supply/battery/$attribute"
+  [ -r "$path" ] && printf '%s: %s\n' "$attribute" "$(cat "$path")"
+done
+printf '\nBacklight:\n'
+for path in /sys/class/backlight/*; do
+  [ -d "$path" ] || continue
+  printf '%s: %s / %s\n' "$(basename "$path")" "$(cat "$path/brightness")" "$(cat "$path/max_brightness")"
+done
+printf '\nDisplay connectors:\n'
+for path in /sys/class/drm/card*-*/status; do
+  [ -r "$path" ] || continue
+  printf '%s: %s\n' "$(basename "$(dirname "$path")")" "$(cat "$path")"
+  cat "$(dirname "$path")/modes"
+done
+printf '\nAudio:\n'
+cat /proc/asound/cards
+amixer -c 0 scontrols
+printf '\nInput devices:\n'
+cat /proc/bus/input/devices
+for path in /sys/class/input/event*/device/capabilities/key; do
+  [ -r "$path" ] || continue
+  printf '%s: ' "$path"
+  cat "$path"
+done
+printf '\nUSB devices:\n'
+for path in /sys/bus/usb/devices/*; do
+  [ -r "$path/idVendor" ] || continue
+  printf '%s %s:%s ' "$(basename "$path")" "$(cat "$path/idVendor")" "$(cat "$path/idProduct")"
+  [ ! -r "$path/product" ] || cat "$path/product"
+  printf '\n'
+done
+printf '\nUSB runtime power management:\n'
+for path in /sys/bus/usb/devices/*/power/control \
+  /sys/bus/usb/devices/*/power/runtime_status \
+  /sys/bus/usb/devices/*/power/autosuspend_delay_ms \
+  /sys/bus/platform/devices/*usb*/power/control \
+  /sys/bus/platform/devices/*usb*/power/runtime_status \
+  /sys/module/usbcore/parameters/autosuspend \
+  /sys/module/usbcore/parameters/initial_descriptor_timeout \
+  /sys/module/usbcore/parameters/old_scheme_first \
+  /sys/module/usbcore/parameters/use_both_schemes; do
+  [ -r "$path" ] || continue
+  printf '%s: %s\n' "$path" "$(cat "$path")"
+done
+printf '\nNetwork interfaces:\n'
+ip link show
+ip address show
+ip route show
+cat /proc/net/arp
+nmcli -f DEVICE,TYPE,STATE device status
+# Carrier counters survive the small in-RAM journal: a lost link shows as
+# down/up counts even when its log lines have rotated away.
+printf '\nLink history since boot (carrier counters, wired state):\n'
+for path in /sys/class/net/*; do
+  interface=${path##*/}
+  [ "$interface" = lo ] && continue
+  printf '%s: operstate=%s carrier=%s changes=%s up=%s down=%s driver=%s\n' "$interface" \
+    "$(cat "$path/operstate" 2>/dev/null)" "$(cat "$path/carrier" 2>/dev/null)" \
+    "$(cat "$path/carrier_changes" 2>/dev/null)" "$(cat "$path/carrier_up_count" 2>/dev/null)" \
+    "$(cat "$path/carrier_down_count" 2>/dev/null)" "$(basename "$(readlink "$path/device/driver" 2>/dev/null)" 2>/dev/null)"
+  if [ ! -d "$path/wireless" ] && [ "$(cat "$path/type" 2>/dev/null)" = 1 ]; then
+    nmcli -f GENERAL.STATE,GENERAL.REASON,GENERAL.CONNECTION,IP4.ADDRESS,IP4.GATEWAY device show "$interface"
+  fi
+done
+printf '\nSSH service and TCP listeners:\n'
+systemctl show sshd.service -p ActiveState -p SubState -p ExecMainStatus
+if command -v ss >/dev/null 2>&1; then
+  ss -lnt
+elif command -v netstat >/dev/null 2>&1; then
+  netstat -lnt
+fi
+printf '\nIPv4 ARP/ICMP policy and input filtering:\n'
+sysctl net.ipv4.icmp_echo_ignore_all net.ipv4.conf.all.arp_ignore net.ipv4.conf.all.arp_filter
+if command -v iptables >/dev/null 2>&1; then
+  iptables -S
+fi
+if command -v nft >/dev/null 2>&1; then
+  nft list ruleset
+fi
+printf '\nWi-Fi link, power saving and IP configuration:\n'
+for interface in $(iw dev 2>/dev/null | awk '$1 == "Interface" { print $2 }'); do
+  sysctl "net.ipv4.conf.$interface.arp_ignore" "net.ipv4.conf.$interface.arp_filter"
+  iw dev "$interface" link
+  iw dev "$interface" station dump
+  iw dev "$interface" get power_save
+  nmcli -f GENERAL.STATE,GENERAL.REASON,GENERAL.CONNECTION,IP4.ADDRESS,IP4.GATEWAY,IP4.DNS device show "$interface"
+done
+printf '\nUSB controller registers and clocks:\n'
+for path in /sys/kernel/debug/usb/ehci/*/registers /sys/kernel/debug/usb/ohci/*/registers /sys/kernel/debug/clk/clk_summary; do
+  [ -r "$path" ] || continue
+  printf '%s:\n' "$path"
+  cat "$path"
+done
+printf '\nPower rails and PWM:\n'
+for path in /sys/kernel/debug/regulator/regulator_summary /sys/kernel/debug/pwm; do
+  [ -r "$path" ] || continue
+  printf '%s:\n' "$path"
+  cat "$path"
+done
+printf '\nGPIO ownership and pin configuration:\n'
+for path in /sys/kernel/debug/gpio /sys/kernel/debug/pinctrl/*/pinmux-pins \
+  /sys/kernel/debug/pinctrl/*/pinconf-pins; do
+  [ -r "$path" ] || continue
+  printf '%s:\n' "$path"
+  cat "$path"
+done
+printf '\nGPIO latch/direction/input and clock/reset registers (read-only):\n'
+a12-register-report
+printf '\nRadio switches:\n'
+for path in /sys/class/rfkill/*; do
+  [ -d "$path" ] || continue
+  for attribute in name type soft hard; do
+    [ ! -r "$path/$attribute" ] || printf '%s %s: %s\n' "$(basename "$path")" "$attribute" "$(cat "$path/$attribute")"
+  done
+done
+printf '\nStorage:\n'
+df -h /flash /storage
+printf '\nDisplay state and registers:\n'
+for path in /sys/kernel/debug/dri/*/state /sys/kernel/debug/regmap/*/registers; do
+  [ -r "$path" ] || continue
+  case "$path" in
+    */dri/*/state|*1010e000*/registers|*20008000*/registers|*20038000*/registers)
+      printf '%s:\n' "$path"
+      cat "$path"
+      ;;
+  esac
+done

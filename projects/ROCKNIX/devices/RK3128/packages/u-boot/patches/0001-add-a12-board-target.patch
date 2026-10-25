@@ -1,0 +1,24 @@
+Subject: [PATCH] rockchip: rk3128: add the Powkiddy A12 revision A target
+
+The board files and configuration are supplied by the RK3128 package sources.
+
+--- a/arch/arm/mach-rockchip/rk3128/Kconfig
++++ b/arch/arm/mach-rockchip/rk3128/Kconfig
+@@ -3,6 +3,10 @@
+ choice
+ 	prompt "RK3128 board select"
+ 
++config TARGET_POWKIDDY_A12_RK3128
++	bool "Powkiddy A12 revision A"
++	select BOARD_LATE_INIT
++
+ config TARGET_EVB_RK3128
+ 	bool "RK3128 evaluation board"
+ 	select BOARD_LATE_INIT
+@@ -26,5 +30,6 @@
+ 	default 0x0800
+ 
+ source "board/rockchip/evb_rk3128/Kconfig"
++source "board/powkiddy/a12-rk3128/Kconfig"
+ 
+ endif

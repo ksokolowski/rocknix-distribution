@@ -1,0 +1,296 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+/* Based on RK3128-CFW's rk3128-powkiddy-a13-rev-ab and KNULLI 5685dd7. */
+/dts-v1/;
+#include "rk3128.dtsi"
+#include <dt-bindings/input/input.h>
+#include <dt-bindings/pwm/pwm.h>
+
+/ {
+	model = "Powkiddy A12 revision A";
+	compatible = "powkiddy,a12-rev-a", "rockchip,rk3128";
+
+	aliases { mmc0 = &sdmmc; };
+	chosen { stdout-path = "serial0:115200n8"; };
+	memory@60000000 { device_type = "memory"; reg = <0x60000000 0x10000000>; };
+	cpus { /delete-property/ enable-method; };
+	psci {
+		compatible = "arm,psci-1.0";
+		method = "smc";
+	};
+	reserved-memory {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges;
+
+		/* Below U-Boot's FDT load address and the TEE hole; survives warm reset. */
+		ramoops@67e00000 {
+			compatible = "ramoops";
+			reg = <0x67e00000 0x100000>;
+			record-size = <0x20000>;
+			console-size = <0x80000>;
+			pmsg-size = <0x20000>;
+			ecc-size = <16>;
+		};
+	};
+	/* Timings and 456 MHz ceiling captured from the owner's live A12 KNULLI.
+	 * The 300 MHz loader remains unchanged; TEE switches to 456 MHz at probe.
+	 */
+	dmc {
+		compatible = "powkiddy,a12-rev-a-dmc";
+		clocks = <&cru PLL_DPLL>, <&cru ARMCLK>;
+		clock-names = "dpll", "cpu";
+		center-supply = <&vdd_log>;
+		rockchip,display = <&display_subsystem>;
+		rockchip,ddr_timing = <&ddr_timing>;
+		vop-dclk-mode = <1>;
+		min-cpu-freq = <600000>;
+		operating-points-v2 = <&dmc_opp_table>;
+	};
+	dmc_opp_table: dmc-opp-table {
+		compatible = "operating-points-v2";
+		opp-300000000 {
+			opp-hz = /bits/ 64 <300000000>;
+			opp-microvolt = <1200000 1200000 1400000>;
+		};
+		opp-456000000 {
+			opp-hz = /bits/ 64 <456000000>;
+			opp-microvolt = <1200000 1200000 1400000>;
+		};
+	};
+	ddr_timing: ddr-timing {
+		ddr3_speed_bin = <21>;
+		pd_idle = <64>;
+		sr_idle = <1>;
+		auto_pd_dis_freq = <300>;
+		auto_sr_dis_freq = <300>;
+		ddr3_dll_dis_freq = <300>;
+		lpddr2_dll_dis_freq = <300>;
+		phy_dll_dis_freq = <266>;
+		ddr3_odt_dis_freq = <333>;
+		phy_ddr3_odt_disb_freq = <333>;
+		ddr3_drv = <0>;
+		ddr3_odt = <64>;
+		phy_ddr3_clk_drv = <11>;
+		phy_ddr3_cmd_drv = <11>;
+		phy_ddr3_dqs_drv = <11>;
+		phy_ddr3_odt = <4>;
+		lpddr2_drv = <1>;
+		phy_lpddr2_clk_drv = <11>;
+		phy_lpddr2_cmd_drv = <11>;
+		phy_lpddr2_dqs_drv = <11>;
+		ddr_2t = <0>;
+	};
+
+	vcc_sys: regulator-vcc-sys {
+		compatible = "regulator-fixed";
+		regulator-name = "vcc_sys";
+		regulator-min-microvolt = <5000000>;
+		regulator-max-microvolt = <5000000>;
+		regulator-always-on;
+		regulator-boot-on;
+	};
+	vcc_io: regulator-vcc-io {
+		compatible = "regulator-fixed";
+		regulator-name = "vcc_io";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		vin-supply = <&vcc_sys>;
+		regulator-always-on;
+		regulator-boot-on;
+	};
+	vdd_arm: regulator-vdd-arm {
+		compatible = "pwm-regulator";
+		regulator-name = "vdd_arm";
+		pwms = <&pwm1 0 5000 PWM_POLARITY_INVERTED>;
+		pwm-dutycycle-range = <0 100>;
+		regulator-min-microvolt = <880000>;
+		regulator-max-microvolt = <1380000>;
+		pwm-supply = <&vcc_sys>;
+		regulator-always-on;
+		regulator-boot-on;
+	};
+	vdd_log: regulator-vdd-log {
+		compatible = "pwm-regulator";
+		regulator-name = "vdd_log";
+		pwms = <&pwm2 0 5000 PWM_POLARITY_INVERTED>;
+		/* Match KNULLI's DMC floor while preserving the 0.9--1.4 V PWM slope. */
+		pwm-dutycycle-range = <60 100>;
+		regulator-min-microvolt = <1200000>;
+		regulator-max-microvolt = <1400000>;
+		pwm-supply = <&vcc_sys>;
+		regulator-always-on;
+		regulator-boot-on;
+	};
+	backlight: backlight {
+		compatible = "pwm-backlight";
+		pwms = <&pwm0 0 25000 0>;
+		/* Linear like KNULLI; level 200 equals KNULLI's default duty. */
+		brightness-levels = <0 255>;
+		num-interpolated-steps = <255>;
+		default-brightness-level = <200>;
+	};
+	stick {
+		compatible = "gpio-keys-polled";
+		label = "stick";
+		poll-interval = <20>;
+		autorepeat;
+		left { label = "left"; linux,code = <BTN_DPAD_LEFT>; gpios = <&gpio2 24 GPIO_ACTIVE_LOW>; };
+		right { label = "right"; linux,code = <BTN_DPAD_RIGHT>; gpios = <&gpio2 25 GPIO_ACTIVE_LOW>; };
+		up { label = "up"; linux,code = <BTN_DPAD_UP>; gpios = <&gpio2 22 GPIO_ACTIVE_LOW>; };
+		down { label = "down"; linux,code = <BTN_DPAD_DOWN>; gpios = <&gpio2 23 GPIO_ACTIVE_LOW>; };
+		a { label = "a"; linux,code = <BTN_A>; gpios = <&gpio0 11 GPIO_ACTIVE_LOW>; };
+		b { label = "b"; linux,code = <BTN_B>; gpios = <&gpio0 9 GPIO_ACTIVE_LOW>; };
+		x { label = "x"; linux,code = <BTN_X>; gpios = <&gpio0 12 GPIO_ACTIVE_LOW>; };
+		y { label = "y"; linux,code = <BTN_Y>; gpios = <&gpio0 13 GPIO_ACTIVE_LOW>; };
+		l { label = "l"; linux,code = <BTN_TL>; gpios = <&gpio0 8 GPIO_ACTIVE_LOW>; };
+		r { label = "r"; linux,code = <BTN_TR>; gpios = <&gpio1 9 GPIO_ACTIVE_LOW>; };
+		back { label = "back"; linux,code = <BTN_MODE>; gpios = <&gpio3 21 GPIO_ACTIVE_LOW>; };
+		select { label = "select"; linux,code = <BTN_SELECT>; gpios = <&gpio3 22 GPIO_ACTIVE_LOW>; };
+		start { label = "start"; linux,code = <BTN_START>; gpios = <&gpio3 27 GPIO_ACTIVE_LOW>; };
+		volume-down { label = "volume-down"; linux,code = <KEY_VOLUMEDOWN>; gpios = <&gpio1 10 GPIO_ACTIVE_LOW>; };
+		volume-up { label = "volume-up"; linux,code = <KEY_VOLUMEUP>; gpios = <&gpio1 8 GPIO_ACTIVE_LOW>; };
+	};
+	panel {
+		compatible = "powkiddy,a12-rev-a-panel";
+		power-supply = <&vcc_io>;
+		backlight = <&backlight>;
+		phys = <&dphy>;
+		phy-names = "rgb";
+		enable-gpios = <&gpio1 RK_PB4 GPIO_ACTIVE_LOW>;
+		reset-gpios = <&gpio0 RK_PD0 GPIO_ACTIVE_LOW>;
+		port { panel_in: endpoint { remote-endpoint = <&vop_out_rgb>; }; };
+	};
+	battery {
+		compatible = "powkiddy,a12-battery";
+		io-channels = <&saradc 2>;
+		io-channel-names = "battery";
+		dc-detect-gpios = <&gpio0 RK_PC1 GPIO_ACTIVE_HIGH>;
+		charge-status-gpios = <&gpio3 RK_PD2 GPIO_ACTIVE_LOW>;
+	};
+	sound {
+		compatible = "simple-audio-card";
+		simple-audio-card,name = "A12 Audio";
+		simple-audio-card,format = "i2s";
+		simple-audio-card,mclk-fs = <256>;
+		simple-audio-card,cpu { sound-dai = <&i2s_8ch>; };
+		simple-audio-card,codec { sound-dai = <&codec>; };
+	};
+	codec: codec@20030000 {
+		compatible = "rockchip,rk3128-codec";
+		reg = <0x20030000 0x4000>;
+		interrupts = <GIC_SPI 64 IRQ_TYPE_LEVEL_HIGH>;
+		clocks = <&cru PCLK_ACODEC>, <&cru SCLK_I2S0>;
+		clock-names = "g_pclk_acodec", "i2s_clk";
+		rockchip,grf = <&grf>;
+		#sound-dai-cells = <0>;
+		spk-ctl-gpios = <&gpio1 RK_PA3 GPIO_ACTIVE_HIGH>;
+		spk-mute-delay = <5>;
+		hp-mute-delay = <5>;
+		spk_volume = <25>;
+		hp_volume = <25>;
+		capture_volume = <26>;
+		rk312x_for_mid = <0>;
+		is_rk3128 = <1>;
+		codec_hp_det = <1>;
+	};
+};
+
+&cpu0 { cpu-supply = <&vdd_arm>; enable-method = "psci"; };
+&cpu1 { enable-method = "psci"; };
+&cpu2 { enable-method = "psci"; };
+&cpu3 { enable-method = "psci"; };
+&timer2 { status = "disabled"; };
+&timer3 { status = "disabled"; };
+&timer4 { status = "disabled"; };
+&timer5 { status = "disabled"; };
+&watchdog { status = "okay"; };
+&gpu { mali-supply = <&vdd_log>; status = "okay"; };
+/* PD_LOGIC includes consumers without mainline voltage constraints. */
+&gpu_opp_table {
+	opp-200000000 { opp-microvolt = <1200000 1200000 1250000>; };
+	opp-300000000 { opp-microvolt = <1200000 1200000 1250000>; };
+	opp-400000000 { opp-microvolt = <1200000 1200000 1250000>; };
+};
+/* Working revision A KNULLI configures both bus sources at 300 MHz. */
+&cru {
+	assigned-clocks = <&cru ACLK_CPU>, <&cru HCLK_CPU>, <&cru PCLK_CPU>,
+			  <&cru ACLK_PERI>, <&cru HCLK_PERI>, <&cru PCLK_PERI>;
+	assigned-clock-rates = <300000000>, <150000000>, <75000000>,
+			       <300000000>, <150000000>, <75000000>;
+};
+&pwm0 { status = "okay"; };
+&pwm1 { status = "okay"; };
+&pwm2 { status = "okay"; };
+&uart0 {
+	/* KNULLI uses TX/RX only. CTS steals the bootloader's high GPIO2_D5. */
+	pinctrl-0 = <&uart0_xfer>;
+	status = "okay";
+};
+&saradc { vref-supply = <&vcc_io>; status = "okay"; };
+&sdmmc {
+	bus-width = <4>;
+	vmmc-supply = <&vcc_io>;
+	vqmmc-supply = <&vcc_io>;
+	/* The root filesystem lives here: retry errors, never tear the card down.
+	 * Test 22's broken-cd poll failed under Wi-Fi load and the re-attach oopsed.
+	 */
+	non-removable;
+	/* DMA through the PL330 (rk3128.dtsi). It faulted under combined SD and
+	 * USB load (tests 22, 27) until kernel patch 0014 fixed the runtime PM
+	 * underflow (test 56); A12_SD_DMA=no builds the PIO tree.
+	 */
+	disable-wp;
+	cap-sd-highspeed;
+	max-frequency = <50000000>;
+	status = "okay";
+};
+&i2s_8ch {
+	#sound-dai-cells = <0>;
+	/delete-property/ pinctrl-0;
+	/delete-property/ pinctrl-names;
+	status = "okay";
+};
+/* Retain the UTMI clock, as in the working KNULLI revision A tree. */
+&usb_host_ehci {
+	clocks = <&cru HCLK_HOST2>, <&usb2phy>;
+	clock-names = "usbhost", "utmi";
+	status = "okay";
+};
+&usb_host_ohci {
+	clocks = <&cru HCLK_HOST2>, <&usb2phy>;
+	clock-names = "usbhost", "utmi";
+	status = "okay";
+};
+&usb_otg { dr_mode = "otg"; status = "okay"; };
+&usb2phy { status = "okay"; };
+&usb2phy_host { status = "okay"; };
+&usb2phy_otg { status = "okay"; };
+/* KNULLI's RGB output uses the video PHY's TTL mode for DATA0--DATA9. */
+&dphy {
+	compatible = "powkiddy,a12-rev-a-ttl-phy";
+	reg = <0x20038000 0x4000>, <0x10110000 0x4000>;
+	clocks = <&cru SCLK_MIPI_24M>, <&cru PCLK_MIPIPHY>, <&cru PCLK_MIPI>;
+	clock-names = "ref", "pclk", "host";
+	status = "okay";
+};
+&display_subsystem { status = "okay"; };
+&vop { pinctrl-names = "default"; pinctrl-0 = <&a12_rgb_pins>; status = "okay"; };
+&vop_out {
+	/delete-node/ endpoint@0;
+	vop_out_rgb: endpoint@0 { reg = <0>; remote-endpoint = <&panel_in>; };
+	vop_out_hdmi_a12: endpoint@2 { reg = <2>; remote-endpoint = <&hdmi_in_vop>; };
+};
+&hdmi_in_vop { remote-endpoint = <&vop_out_hdmi_a12>; };
+&hdmi { status = "okay"; };
+&pinctrl {
+	a12 {
+		a12_rgb_pins: rgb-pins {
+			rockchip,pins = <2 RK_PB0 1 &pcfg_pull_none>, <2 RK_PB1 1 &pcfg_pull_none>,
+				<2 RK_PB2 1 &pcfg_pull_none>, <2 RK_PB3 1 &pcfg_pull_none>,
+				<2 RK_PB4 1 &pcfg_pull_none>, <2 RK_PB5 1 &pcfg_pull_none>,
+				<2 RK_PB6 1 &pcfg_pull_none>, <2 RK_PB7 1 &pcfg_pull_none>,
+				<2 RK_PC0 1 &pcfg_pull_none>, <2 RK_PC1 1 &pcfg_pull_none>,
+				<2 RK_PC2 1 &pcfg_pull_none>, <2 RK_PC3 1 &pcfg_pull_none>;
+		};
+	};
+};

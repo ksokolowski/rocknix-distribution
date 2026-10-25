@@ -4,6 +4,10 @@
 . config/functions
 
 mkimage_uboot() {
+  if declare -F mkimage_uboot_device >/dev/null; then
+    mkimage_uboot_device
+    return
+  fi
   if [ -f "${RELEASE_DIR}/3rdparty/bootloader/${SUBDEVICE}_uboot.bin" ]; then
     # RK3566-Generic and RK3566-Powkiddy_x55
     echo "image: writing ${SUBDEVICE}_uboot.bin to $(basename "${DISK}")..."

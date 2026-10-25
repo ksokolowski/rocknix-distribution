@@ -1,0 +1,13 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0
+# Copyright (C) 2026-present ROCKNIX (https://github.com/ROCKNIX)
+
+# Games and emulators run the A12's CPU at full speed unless the user chose
+# a governor. The GPU follows DEVICE_GAME_GPU_PERFORMANCE.
+. /etc/profile.d/001-functions
+
+# get_setting would fall back to system.cpugovernor, the frontend's governor.
+if ! grep -q "^global\.cpugovernor=" "${J_CONF}"
+then
+  set_setting global.cpugovernor performance
+fi

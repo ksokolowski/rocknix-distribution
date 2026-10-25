@@ -28,6 +28,9 @@ docs:
 
 world: RK3588 RK3576 RK3566 RK3326 RK3399 S922X SM8250 SM8550 H700 SM8650 SM8750
 
+RK3128:
+	PROJECT=ROCKNIX DEVICE=RK3128 ARCH=arm ./scripts/build_distro
+
 kconfig-olddefconfig-%:
 	DEVICE=$* ./tools/adjust_kernel_config olddefconfig
 

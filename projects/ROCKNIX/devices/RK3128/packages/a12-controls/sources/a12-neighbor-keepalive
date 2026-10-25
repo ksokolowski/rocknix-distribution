@@ -1,0 +1,15 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+# The A12 RTL8188EU misses broadcast ARP requests, so peers cannot discover
+# it. Peers learn its address from its own requests; ping them periodically.
+config=${A12_KEEPALIVE_CONFIG:-/storage/.config/a12-keepalive.conf}
+hosts=""
+[ -r "$config" ] && hosts=$(sed -n 's/^HOSTS=//p' "$config" | tr -d '"')
+gateway=$(ip route show default 2>/dev/null | awk '/^default/ { print $3; exit }')
+for host in $gateway $hosts; do
+  case "$host" in
+    *[!0-9.]*|"") continue ;;
+  esac
+  ping -c 1 -W 2 "$host" >/dev/null 2>&1 || logger -t a12-keepalive "no reply from $host"
+done
+exit 0

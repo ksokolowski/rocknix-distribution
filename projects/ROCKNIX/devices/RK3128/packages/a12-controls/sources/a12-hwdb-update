@@ -1,0 +1,20 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Keep the udev hwdb on /storage instead of /run (tmpfs): ROCKNIX rebuilt the
+# 12.5 MB hwdb.bin into RAM on every boot (5.5 s). udev reads
+# /etc/systemd/hwdb/hwdb.bin first; the image links it to /storage/.cache/hwdb.
+# Rebuild only when the image or the user's hwdb.d changes.
+dir=${A12_HWDB_DIR:-/storage/.cache/hwdb}
+run=${A12_HWDB_RUN:-/run}
+user=${A12_HWDB_USER:-/storage/.config/hwdb.d}
+release=${A12_OS_RELEASE:-/etc/os-release}
+
+stamp=$( { grep '^BUILD_ID=' "$release"; ls -ln --full-time "$user" 2>/dev/null; } | md5sum)
+if [ -f "$dir/hwdb.bin" ] && [ "$(cat "$dir/stamp" 2>/dev/null)" = "$stamp" ]; then
+  exit 0
+fi
+mkdir -p "$dir"
+systemd-hwdb update || exit 1
+cp "$run/hwdb.bin" "$dir/hwdb.bin.new" && mv "$dir/hwdb.bin.new" "$dir/hwdb.bin" || exit 1
+rm -f "$run/hwdb.bin"
+echo "$stamp" > "$dir/stamp"

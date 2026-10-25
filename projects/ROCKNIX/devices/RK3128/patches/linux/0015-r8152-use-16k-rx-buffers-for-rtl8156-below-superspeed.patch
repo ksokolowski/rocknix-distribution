@@ -1,0 +1,42 @@
+Subject: [PATCH] r8152: use 16 KiB rx buffers for RTL8156 below SuperSpeed
+
+rtl8152_open() allocates RTL8152_MAX_RX receive aggregation buffers of
+rx_buf_sz each. For the RTL8156 family that is 48 KiB, an order-4
+allocation, above PAGE_ALLOC_COSTLY_ORDER: on a small system with
+fragmented memory it fails quickly, open returns -ENOMEM and the link
+never comes up. Behind a USB 2.0 host the larger aggregation buffer
+brings nothing; the RTL8153 already uses 16 KiB below SuperSpeed.
+Do the same for the RTL8156.
+
+Found on the Powkiddy A12 (RK3128, 256 MiB, EHCI only) with an RTL8156:
+on the first boot after a system update NetworkManager's link-up failed
+with "Cannot allocate memory" and eth0 stayed without carrier until the
+adapter was replugged (TEST_LOG test 57); fragmenting memory reproduces
+it on demand.
+
+--- a/drivers/net/usb/r8152.c
++++ b/drivers/net/usb/r8152.c
+@@ -9573,7 +9573,10 @@
+ 		ops->hw_phy_cfg		= r8156_hw_phy_cfg;
+ 		ops->autosuspend_en	= rtl8156_runtime_enable;
+ 		ops->change_mtu		= rtl8156_change_mtu;
+-		tp->rx_buf_sz		= 48 * 1024;
++		if (tp->udev->speed < USB_SPEED_SUPER)
++			tp->rx_buf_sz	= 16 * 1024;
++		else
++			tp->rx_buf_sz	= 48 * 1024;
+ 		tp->support_2500full	= 1;
+ 		r8152_desc_init(tp);
+ 		break;
+@@ -9598,7 +9601,10 @@
+ 		ops->hw_phy_cfg		= r8156b_hw_phy_cfg;
+ 		ops->autosuspend_en	= rtl8156_runtime_enable;
+ 		ops->change_mtu		= rtl8156_change_mtu;
+-		tp->rx_buf_sz		= 48 * 1024;
++		if (tp->udev->speed < USB_SPEED_SUPER)
++			tp->rx_buf_sz	= 16 * 1024;
++		else
++			tp->rx_buf_sz	= 48 * 1024;
+ 		r8152_desc_init(tp);
+ 		break;
+ 

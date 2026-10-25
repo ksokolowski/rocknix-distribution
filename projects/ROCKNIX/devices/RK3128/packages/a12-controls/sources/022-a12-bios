@@ -1,0 +1,15 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-or-later
+
+# Seed blueMSX's machine definitions and databases (shipped in the image,
+# free C-BIOS included) into the BIOS directory when they are missing; a
+# folder the owner already has is left alone. A12_ROOT is for tests.
+root=${A12_ROOT:-}
+src="${root}/usr/share/bluemsx"
+bios="${root}/storage/roms/bios"
+[ -d "${src}" ] && [ -d "${bios}" ] || exit 0
+for dir in Machines Databases; do
+  [ -d "${src}/${dir}" ] && [ ! -e "${bios}/${dir}" ] || continue
+  cp -a "${src}/${dir}" "${bios}/"
+done
+exit 0

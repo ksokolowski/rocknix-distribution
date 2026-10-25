@@ -1,0 +1,7 @@
+[Unit]
+Description=Network neighbour announcement
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/a12-neighbor-keepalive

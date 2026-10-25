@@ -1,0 +1,71 @@
+Subject: [PATCH] vout: keep the private video output data naturally aligned
+
+vout_Create() and spu_Create() place the private structure right after the
+public one (&vout[1], &spu[1]). On 32-bit ARM sizeof(vout_thread_t) and
+sizeof(spu_t) are 28, so the private data is only 4-byte aligned, while it
+contains condition variables (pthread_cond_t needs 8-byte alignment).
+glibc's pthread_cond_wait() reads the condition variable with a 64-bit
+exclusive load (ldrexd), which ARMv7 rejects on a misaligned address:
+vout_control_WaitEmpty() on vout->p->control.wait_acknowledge (vout + 428)
+kills the process with SIGBUS as soon as a video plays.
+
+Allocate the public and private parts as one structure so the compiler
+inserts the padding. No change on 64-bit targets, where the sizes are
+already multiples of 8.
+
+Found on the Powkiddy A12 (RK3128, Cortex-A7, glibc 2.44): EmulationStation
+crashed whenever it played a game preview video through libVLC.
+--- a/src/video_output/video_output.c
++++ b/src/video_output/video_output.c
+@@ -120,9 +120,16 @@
+     if (VoutValidateFormat(&original, cfg->fmt))
+         return NULL;
+ 
+-    /* Allocate descriptor */
++    /* Allocate descriptor. The private part follows the public one at its
++     * natural alignment: it holds condition variables, and on 32-bit ARM
++     * sizeof(vout_thread_t) is 28, so &vout[1] would only be 4-byte aligned
++     * and glibc's 64-bit exclusive loads on it raise SIGBUS. */
++    struct vout_thread_alloc {
++        vout_thread_t     vout;
++        vout_thread_sys_t sys;
++    };
+     vout_thread_t *vout = vlc_custom_create(object,
+-                                            sizeof(*vout) + sizeof(*vout->p),
++                                            sizeof(struct vout_thread_alloc),
+                                             "video output");
+     if (!vout) {
+         video_format_Clean(&original);
+@@ -130,7 +137,7 @@
+     }
+ 
+     /* */
+-    vout->p = (vout_thread_sys_t*)&vout[1];
++    vout->p = &((struct vout_thread_alloc *)vout)->sys;
+ 
+     vout->p->original = original;
+     vout->p->dpb_size = cfg->dpb_size;
+--- a/src/video_output/vout_subpictures.c
++++ b/src/video_output/vout_subpictures.c
+@@ -1293,14 +1293,18 @@
+  */
+ spu_t *spu_Create(vlc_object_t *object, vout_thread_t *vout)
+ {
+-    spu_t *spu = vlc_custom_create(object,
+-                                   sizeof(spu_t) + sizeof(spu_private_t),
++    /* Keep the private part at its natural alignment (see vout_Create). */
++    struct spu_alloc {
++        spu_t         spu;
++        spu_private_t sys;
++    };
++    spu_t *spu = vlc_custom_create(object, sizeof(struct spu_alloc),
+                                    "subpicture");
+     if (!spu)
+         return NULL;
+ 
+     /* Initialize spu fields */
+-    spu_private_t *sys = spu->p = (spu_private_t*)&spu[1];
++    spu_private_t *sys = spu->p = &((struct spu_alloc *)spu)->sys;
+ 
+     /* Initialize private fields */
+     vlc_mutex_init(&sys->lock);

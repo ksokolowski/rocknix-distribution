@@ -39,7 +39,7 @@ case ${DEVICE} in
     # Note that the patch dir 7.2 is automatically added as it matches the
     # version. When we move past 7.2, remember to add 7.2 to patch dirs.
     ;;
-  RK3326|AMD64)
+  RK3128|RK3326|AMD64)
     PKG_VERSION="7.1.2"
     PKG_SHA256="37198c93727be247c9fb5309bb86cd5e496c61e5322cd8c4eca9476bb0b5883f"
     PKG_URL="https://www.kernel.org/pub/linux/kernel/v${PKG_VERSION/.*/}.x/${PKG_NAME}-${PKG_VERSION}.tar.xz"
@@ -113,7 +113,14 @@ post_patch() {
 
   DTS_SOURCE_DIR="${PROJECT_DIR}/${PROJECT}/devices/${DEVICE}/linux/dts"
   if [ -d "${DTS_SOURCE_DIR}" ]; then
-    rsync -av "${DTS_SOURCE_DIR}/" ${PKG_BUILD}/arch/arm64/boot/dts/
+    rsync -av "${DTS_SOURCE_DIR}/" ${PKG_BUILD}/arch/${TARGET_KERNEL_ARCH}/boot/dts/
+  fi
+
+  # Powkiddy A12: SD runs over PL330 DMA (kernel patch 0014, test 56);
+  # A12_SD_DMA=no builds the old PIO tree for comparison.
+  if [ "${DEVICE}" = "RK3128" ] && [ "${A12_SD_DMA}" = "no" ]; then
+    sed -i -e 's|^&sdmmc {$|&\n\t/delete-property/ dmas;\n\t/delete-property/ dma-names;|' \
+      ${PKG_BUILD}/arch/${TARGET_KERNEL_ARCH}/boot/dts/rockchip/rk3128-powkiddy-a12-rev-a.dts
   fi
 }
 
@@ -192,6 +199,12 @@ pre_make_target() {
   # disable wireguard support if not enabled
   if [ ! "${WIREGUARD_SUPPORT}" = yes ]; then
     ${PKG_BUILD}/scripts/config --disable CONFIG_WIREGUARD
+  fi
+
+  # Powkiddy A12 B12 step 6 (test 61): no fbdev or fbcon unless A12_NO_FBDEV=no.
+  if [ "${DEVICE}" = "RK3128" ] && [ "${A12_NO_FBDEV}" != "no" ]; then
+    ${PKG_BUILD}/scripts/config --disable CONFIG_DRM_FBDEV_EMULATION \
+      --disable CONFIG_FRAMEBUFFER_CONSOLE --disable CONFIG_FB
   fi
 
   if [[ "${TARGET_ARCH}" =~ i*86|x86_64 ]]; then
@@ -403,7 +416,7 @@ makeinstall_target() {
     mkdir -p ${INSTALL}/usr/share/bootloader
     for dtb in arch/${TARGET_KERNEL_ARCH}/boot/dts/**/*.dtb; do
       if [ -f ${dtb} ]; then
-        if [ "${DEVICE}" = "H700" -o "${DEVICE}" = "RK3326" -o "${DEVICE}" = "RK3399" -o "${DEVICE}" = "RK3566" -o "${DEVICE}" = "RK3576" -o "${DEVICE}" = "RK3588" ]; then
+        if [ "${DEVICE}" = "RK3128" -o "${DEVICE}" = "H700" -o "${DEVICE}" = "RK3326" -o "${DEVICE}" = "RK3399" -o "${DEVICE}" = "RK3566" -o "${DEVICE}" = "RK3576" -o "${DEVICE}" = "RK3588" ]; then
           mkdir -p ${INSTALL}/usr/share/bootloader/device_trees
           cp -v ${dtb} ${INSTALL}/usr/share/bootloader/device_trees
         else
