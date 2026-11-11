@@ -7,7 +7,7 @@ PKG_SHA256="fe67167459f68f2335babc86e63fcb1a2e62bce8fac6b435e28240a07e2d7b59"
 PKG_LICENSE="GPL-3.0-or-later"
 PKG_SITE="https://github.com/scummvm/scummvm"
 PKG_URL="${PKG_SITE}/archive/refs/tags/v${PKG_VERSION}.tar.gz"
-PKG_DEPENDS_TARGET="toolchain SDL2 SDL2_net freetype fluidsynth soundfont-generaluser pipewire"
+PKG_DEPENDS_TARGET="toolchain SDL2 SDL2_net freetype fluidsynth soundfont-generaluser pipewire libvorbis libogg libjpeg-turbo libpng libvpx zlib libmpeg2 curl"
 PKG_LONGDESC="Script Creation Utility for Maniac Mansion Virtual Machine"
 PKG_BUILD_FLAGS="-cfg-libs"
 
