@@ -1,0 +1,50 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+set -eu
+directory=${A12_DIAGNOSTICS_DIR:-/storage/.cache/a12-diagnostics}
+pstore=${A12_PSTORE_DIR:-/sys/fs/pstore}
+report=${A12_HARDWARE_REPORT:-/usr/bin/a12-hardware-report}
+phase=${1:-boot}
+case "$phase" in boot|shutdown) ;; *) exit 1 ;; esac
+boot_id=${A12_BOOT_ID:-$(cat /proc/sys/kernel/random/boot_id)}
+mkdir -p "$directory"
+# Keep the last five boots (each with its boot and, if it shut down cleanly,
+# its shutdown report) in prev/ (newest) to prev.4, so a problem boot
+# survives a few test reboots. A second run in the same boot does not rotate.
+if [ "$phase" = boot ] && [ "$(cat "$directory/boot-id" 2>/dev/null)" != "$boot_id" ]; then
+  rm -rf "$directory/prev.4"
+  for n in 3 2 1; do
+    if [ -d "$directory/prev.$n" ]; then mv "$directory/prev.$n" "$directory/prev.$((n + 1))"; fi
+  done
+  if [ -d "$directory/prev" ]; then mv "$directory/prev" "$directory/prev.1"; fi
+  mkdir "$directory/prev"
+  for file in "$directory"/boot-id "$directory"/boot-*.txt "$directory"/shutdown-*.txt; do
+    if [ -e "$file" ]; then mv "$file" "$directory/prev/"; fi
+  done
+  echo "$boot_id" >"$directory/boot-id"
+fi
+# Keep the previous boot's crash log; removing a record frees its ramoops slot.
+if [ "$phase" = boot ] && [ -n "$(ls -A "$pstore" 2>/dev/null)" ]; then
+  mkdir -p "$directory/pstore-$boot_id"
+  cp "$pstore"/* "$directory/pstore-$boot_id/" && rm -f "$pstore"/*
+  # Keep the last five copies (oldest first in pstore.list).
+  grep -vxF "$boot_id" "$directory/pstore.list" 2>/dev/null >"$directory/pstore.list.new" || true
+  echo "$boot_id" >>"$directory/pstore.list.new"
+  while [ "$(wc -l <"$directory/pstore.list.new")" -gt 5 ]; do
+    rm -rf "$directory/pstore-$(head -n 1 "$directory/pstore.list.new")"
+    sed -i 1d "$directory/pstore.list.new"
+  done
+  mv "$directory/pstore.list.new" "$directory/pstore.list"
+fi
+# Write directly to storage even if the persistent /var/log mount fails.
+{
+  "$report" || true
+  printf '\nFailed services:\n'
+  systemctl --failed --no-pager || true
+  printf '\nKernel messages:\n'
+  dmesg || true
+} >"$directory/$phase-hardware.txt.new" 2>&1
+mv "$directory/$phase-hardware.txt.new" "$directory/$phase-hardware.txt"
+journalctl -b --no-pager -o short-monotonic >"$directory/$phase-journal.txt.new" 2>&1 || true
+mv "$directory/$phase-journal.txt.new" "$directory/$phase-journal.txt"
+sync

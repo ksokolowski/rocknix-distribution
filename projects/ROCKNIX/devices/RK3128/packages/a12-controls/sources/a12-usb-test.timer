@@ -1,0 +1,9 @@
+[Unit]
+Description=USB timing diagnosis timer
+
+[Timer]
+OnBootSec=60s
+Unit=a12-usb-test.service
+
+[Install]
+WantedBy=timers.target

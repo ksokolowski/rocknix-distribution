@@ -1,0 +1,12 @@
+[Unit]
+Description=Power source policy
+After=powerstate.service rocknix-autostart.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/a12-power
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

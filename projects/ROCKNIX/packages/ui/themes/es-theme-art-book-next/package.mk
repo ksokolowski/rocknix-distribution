@@ -23,4 +23,11 @@ makeinstall_target() {
       <fontLight>/usr/share/fonts/truetype/noto-cjk/NotoSansCJKsc-Regular.otf</fontLight>\
       <fontLogo>/usr/share/fonts/truetype/noto-cjk/NotoSansCJKsc-Regular.otf</fontLogo>\
    </variables>' ${INSTALL}/usr/share/themes/${PKG_NAME}/fonts.xml
+  # RK3128: fit game previews inside the video panel (keep aspect) instead of
+  # covering it and cropping; vertical and 4:3 arcade previews were cut off.
+  if [ "${DEVICE}" = "RK3128" ]; then
+    sed -i '/<video[ >]/,/<\/video>/ s#<\(/\?\)minSize>#<\1maxSize>#g' \
+      ${INSTALL}/usr/share/themes/${PKG_NAME}/theme.xml \
+      ${INSTALL}/usr/share/themes/${PKG_NAME}/aspect-ratio-*.xml
+  fi
 }

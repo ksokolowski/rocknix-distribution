@@ -13,6 +13,13 @@ PKG_BUILD_FLAGS="-gold"
 
 PKG_MAKE_OPTS_TARGET="-f Makefile.libretro -C .."
 
+pre_make_target() {
+  # Assembly without .note.GNU-stack; glibc will not dlopen an RWE core into RetroArch.
+  if [ "${TARGET_ARCH}" = "arm" ]; then
+    export LDFLAGS+=" -Wl,-z,noexecstack"
+  fi
+}
+
 makeinstall_target() {
   mkdir -p ${INSTALL}/usr/lib/libretro
     cp -a ${PKG_BUILD}/picodrive_libretro.so ${INSTALL}/usr/lib/libretro

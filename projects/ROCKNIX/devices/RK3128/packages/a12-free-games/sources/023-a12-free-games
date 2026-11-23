@@ -1,0 +1,29 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-or-later
+
+# Link the image's freely distributable games into roms (copying them took a
+# minute of the first boot). The marker lists every file seeded so far: a
+# later boot skips those (a deleted game stays deleted), a game a newer image
+# adds is seeded once, and an existing file is never replaced. Saves go next
+# to the link, in roms. A12_ROOT is for tests.
+root=${A12_ROOT:-}
+src="${root}/usr/share/a12-free-games"
+roms="${root}/storage/roms"
+marker="${root}/storage/.cache/a12-free-games.seeded"
+[ -d "${src}" ] && [ -d "${roms}" ] || exit 0
+# The first version left an empty marker after seeding Doom only.
+[ -f "${marker}" ] && [ ! -s "${marker}" ] && printf '%s\n' doom/doom1.wad doom/doom1.wad.copyright.txt > "${marker}"
+for file in "${src}"/*/*; do
+  [ -f "${file}" ] || continue
+  rel=${file#"${src}/"}
+  grep -qxF "${rel}" "${marker}" 2>/dev/null && continue
+  mkdir -p "${roms}/${rel%/*}"
+  [ -e "${roms}/${rel}" ] || [ -L "${roms}/${rel}" ] || ln -s "${file}" "${roms}/${rel}"
+  echo "${rel}" >> "${marker}"
+done
+# Links to games a newer image no longer ships.
+for link in "${roms}"/*/*; do
+  [ -L "${link}" ] && [ ! -e "${link}" ] || continue
+  case "$(readlink "${link}")" in "${src}/"*) rm -f "${link}" ;; esac
+done
+exit 0

@@ -1,0 +1,99 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-or-later
+set -eu
+
+marker=/storage/.cache/a12-usb-test-once
+directory=/storage/.cache/a12-diagnostics/usb-test
+platform=/sys/bus/platform
+ehci=101c0000.usb
+ohci=101e0000.usb
+
+external_usb_present() {
+  local device
+  for device in /sys/bus/usb/devices/*; do
+    [ -r "${device}/idVendor" ] || continue
+    case "${device##*/}" in usb*) continue ;; esac
+    return 0
+  done
+  return 1
+}
+
+capture() {
+  local phase="$1"
+  /usr/bin/a12-hardware-report >"${directory}/${phase}-hardware.txt" 2>&1 || :
+  dmesg >"${directory}/${phase}-dmesg.txt" 2>&1 || :
+  sync
+}
+
+wake_hosts() {
+  local device path
+  for device in "${ehci}" "${ohci}"; do
+    path="${platform}/devices/${device}/power/control"
+    [ ! -w "${path}" ] || printf 'on\n' >"${path}"
+  done
+  for device in /sys/bus/usb/devices/usb*; do
+    case "$(readlink -f "${device}")" in
+      *"/${ehci}/"*|*"/${ohci}/"*)
+        path="${device}/power/control"
+        [ ! -w "${path}" ] || printf 'on\n' >"${path}"
+        ;;
+    esac
+  done
+}
+
+restore_hosts() {
+  # Restore either controller if a bind fails or the service is interrupted.
+  if [ ! -L "${platform}/devices/${ehci}/driver" ]; then
+    printf '%s\n' "${ehci}" >"${platform}/drivers/ehci-platform/bind" || :
+  fi
+  if [ ! -L "${platform}/devices/${ohci}/driver" ]; then
+    printf '%s\n' "${ohci}" >"${platform}/drivers/ohci-platform/bind" || :
+  fi
+}
+
+[ -f "${marker}" ] || exit 0
+[ "$(tr -d '\000' </proc/device-tree/model)" = "Powkiddy A12 revision A" ] || exit 1
+mkdir -p "${directory}"
+exec >"${directory}/sequence.txt" 2>&1
+rm -f "${marker}"
+printf 'Start at uptime: '; cat /proc/uptime
+capture baseline
+if external_usb_present; then
+  echo 'USB peripheral already detected; no controller changes.'
+  exit 0
+fi
+
+echo 'Resume host root hubs and prevent their autosuspend for this boot.'
+wake_hosts
+sleep 5
+capture after-resume
+if external_usb_present; then
+  echo 'USB peripheral detected after resume; no controller reprobe.'
+  exit 0
+fi
+
+for pair in "${ehci}:ehci-platform" "${ohci}:ohci-platform"; do
+  device=${pair%%:*}
+  driver=${pair#*:}
+  [ "$(readlink -f "${platform}/devices/${device}/driver")" = "${platform}/drivers/${driver}" ] || exit 1
+  [ -w "${platform}/drivers/${driver}/unbind" ] || exit 1
+  [ -w "${platform}/drivers/${driver}/bind" ] || exit 1
+done
+
+echo 'No peripheral detected; reinitialize EHCI/OHCI with a settled board.'
+trap restore_hosts EXIT
+trap 'exit 1' TERM INT
+printf '%s\n' "${ehci}" >"${platform}/drivers/ehci-platform/unbind"
+printf '%s\n' "${ohci}" >"${platform}/drivers/ohci-platform/unbind"
+sleep 3
+printf '%s\n' "${ehci}" >"${platform}/drivers/ehci-platform/bind"
+sleep 1
+printf '%s\n' "${ohci}" >"${platform}/drivers/ohci-platform/bind"
+wake_hosts
+sleep 5
+capture after-reprobe
+if external_usb_present; then
+  echo 'USB peripheral detected after delayed controller reprobe.'
+else
+  echo 'Still no USB peripheral detected after delayed controller reprobe.'
+fi

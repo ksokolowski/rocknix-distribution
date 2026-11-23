@@ -1,0 +1,1 @@
+19000000010000000100000000010000,stick,a:b1,b:b0,x:b2,y:b3,back:b6,start:b7,guide:b8,leftshoulder:b4,rightshoulder:b5,dpup:b9,dpdown:b10,dpleft:b11,dpright:b12,platform:Linux,

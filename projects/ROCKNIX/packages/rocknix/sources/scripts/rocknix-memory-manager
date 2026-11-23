@@ -568,6 +568,13 @@ if [ -e /sys/block/zram0/comp_algorithm ] && ! grep -q "$PRIMARY_ALGO" /sys/bloc
     fi
 fi
 
+# A device can keep its primary algorithm and name a second one for idle
+# recompression (ZRAM_RECOMP_ALGO, e.g. lzo-rle + zstd on the A12).
+if [ -n "$ZRAM_RECOMP_ALGO" ] && [[ "$ZRAM_RECOMP_ALGO" != "@ZRAM_RECOMP_ALGO@" ]] && \
+   [ "$ZRAM_RECOMP_ALGO" != "$PRIMARY_ALGO" ]; then
+    SECONDARY_ALGO="$ZRAM_RECOMP_ALGO"
+fi
+
 # --- 6. PERFORM ACTION ---
 
 case "$ACTION" in

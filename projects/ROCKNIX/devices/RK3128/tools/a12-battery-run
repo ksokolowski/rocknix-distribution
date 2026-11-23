@@ -1,0 +1,24 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Log a battery run for the power-policy comparison: every A12_INTERVAL
+# seconds (60) one line with time, uptime, status, capacity, voltage,
+# brightness, bl_power and CPU governor, until the capacity reaches 10 % or
+# SIGTERM. Start it on the device after unplugging; A12_ROOT is for tests.
+root=${A12_ROOT:-}
+interval=${A12_INTERVAL:-60}
+bat="${root}/sys/class/power_supply/battery"
+bl="${root}/sys/class/backlight/backlight"
+log="${root}/storage/.cache/a12-diagnostics/battery-run-$(cat "${root}/proc/sys/kernel/random/boot_id").log"
+trap 'exit 0' TERM INT
+[ -s "${log}" ] || echo "# time uptime status capacity voltage brightness bl_power governor" >"${log}"
+while :; do
+  read -r uptime _ <"${root}/proc/uptime"
+  capacity=$(cat "${bat}/capacity" 2>/dev/null)
+  echo "$(date +%s) ${uptime%.*} $(cat "${bat}/status") ${capacity} $(cat "${bat}/voltage_now")" \
+    "$(cat "${bl}/brightness") $(cat "${bl}/bl_power")" \
+    "$(cat "${root}/sys/devices/system/cpu/cpufreq/policy0/scaling_governor")" >>"${log}"
+  sync "${log}" 2>/dev/null
+  [[ "${capacity}" =~ ^[0-9]+$ ]] && [ "${capacity}" -le 10 ] && exit 0
+  sleep "${interval}" &
+  wait $!
+done

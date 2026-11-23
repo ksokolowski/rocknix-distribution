@@ -1,0 +1,12 @@
+[Unit]
+Description=Hardware diagnostics
+RequiresMountsFor=/storage
+# Stop/report before these services disappear during shutdown.
+After=NetworkManager.service iwd.service sshd.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/a12-save-report boot
+ExecStop=/usr/bin/a12-save-report shutdown
+TimeoutStopSec=30

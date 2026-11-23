@@ -80,6 +80,17 @@ EOF
 
   sed -i "s#@DEVICENAME@#${DEVICE}#g" ${INSTALL}/usr/config/system/configs/system.cfg
 
+  # Match the A12's RGUI-only RetroArch build, including launcher overrides.
+  if [ "${DEVICE}" = "RK3128" ]; then
+    sed -i "s#^global.retroarch.menu_driver=.*#global.retroarch.menu_driver=rgui#" ${INSTALL}/usr/config/system/configs/system.cfg
+    # UTC by default (tz-data's boot fallback: quirks drop-in).
+    sed -i "s#^system.timezone=.*#system.timezone=UTC#" ${INSTALL}/usr/config/system/configs/system.cfg
+    # Virtual Boy without a bezel: the monitor frame covered the picture.
+    echo "virtualboy.bezel=none" >> ${INSTALL}/usr/config/system/configs/system.cfg
+    # The menu clocks down (the kernel has no ondemand); games keep performance.
+    echo "system.cpugovernor=schedutil" >> ${INSTALL}/usr/config/system/configs/system.cfg
+  fi
+
   ### Defaults for community builds.
   if [ "${OS_BUILD}" = "community" ]
   then

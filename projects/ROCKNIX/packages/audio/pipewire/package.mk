@@ -131,11 +131,15 @@ EOF
 post_install() {
   add_user pipewire x 982 980 "pipewire-daemon" "/var/run/pipewire" "/bin/sh"
   add_group pipewire 980
-  mkdir -p ${INSTALL}/etc/alsa/conf.d
-  ln -sf /usr/share/alsa/alsa.conf.d/50-pipewire.conf ${INSTALL}/etc/alsa/conf.d/50-pipewire.conf
-  ln -sf /usr/share/alsa/alsa.conf.d/99-pipewire-default.conf ${INSTALL}/etc/alsa/conf.d/99-pipewire-default.conf
-  enable_service pipewire.socket
-  enable_service pipewire.service
-  enable_service pipewire-pulse.socket
-  enable_service pipewire-pulse.service
+  # Without PIPEWIRE_SUPPORT the library may still be linked (e.g. by
+  # scummvm-sa); the daemons and the ALSA default PCM stay off.
+  if [ "${PIPEWIRE_SUPPORT}" = "yes" ]; then
+    mkdir -p ${INSTALL}/etc/alsa/conf.d
+    ln -sf /usr/share/alsa/alsa.conf.d/50-pipewire.conf ${INSTALL}/etc/alsa/conf.d/50-pipewire.conf
+    ln -sf /usr/share/alsa/alsa.conf.d/99-pipewire-default.conf ${INSTALL}/etc/alsa/conf.d/99-pipewire-default.conf
+    enable_service pipewire.socket
+    enable_service pipewire.service
+    enable_service pipewire-pulse.socket
+    enable_service pipewire-pulse.service
+  fi
 }

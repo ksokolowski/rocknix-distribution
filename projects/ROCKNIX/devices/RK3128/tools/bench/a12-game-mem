@@ -1,0 +1,46 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-or-later
+# In-game memory breakdown, ES resident: a temporary port runs silent Final Fight
+# (RetroArch, 1800 frames); a sample at SAMPLE_AT s lists mappings by size.
+set -eu
+out=$1; at=${SAMPLE_AT:-25}
+api=http://127.0.0.1:1234
+port=/storage/roms/ports/zz-a12-mem-probe.sh
+mkdir -p "$out"
+cat > "$out/override.cfg" <<CONFIG
+config_save_on_exit = "false"
+content_history_enable = "false"
+savestate_auto_load = "false"
+savestate_auto_save = "false"
+savefile_directory = "$out"
+savestate_directory = "$out"
+audio_enable = "false"
+audio_sync = "false"
+audio_driver = "null"
+CONFIG
+printf '#!/bin/bash\n. /etc/profile >/dev/null 2>&1\nexec retroarch -L /usr/lib/libretro/fbneo_libretro.so --config /storage/.config/retroarch/retroarch.cfg --appendconfig %q --max-frames=1800 --sram-mode=noload-nosave /storage/bench/ffight.zip > %q 2>&1\n' "$out/override.cfg" "$out/ra.log" > "$port"
+chmod 755 "$port"
+trap 'rm -f "$port"; curl -s "$api/reloadgames" >/dev/null' EXIT
+curl -sf "$api/runningGame" | grep -q 'NO GAME RUNNING'
+curl -s "$api/reloadgames" >/dev/null; sleep 5
+grep -E '^(MemAvailable|Shmem|AnonPages|Unevictable|SwapFree|CmaFree|Cached|Mlocked):' /proc/meminfo > "$out/menu-meminfo.txt"
+curl -s -d "$port" "$api/launch" >/dev/null
+sleep "$at"
+pid=$(pidof retroarch)
+{
+  date; grep -E '^(MemAvailable|MemFree|Shmem|AnonPages|Unevictable|SwapFree|CmaFree|Cached|Mlocked|Slab|KernelStack|PageTables):' /proc/meminfo
+  echo "== retroarch rollup"; cat /proc/$pid/smaps_rollup
+  echo "== lima per client"
+  for p in $pid $(pidof emulationstation); do
+    for f in /proc/$p/fdinfo/*; do grep -q '^drm-driver:.lima' $f 2>/dev/null && echo "$p $(grep -h -E '^drm-(client-id|total-memory|shared-memory|resident-memory|purgeable-memory|active-memory)' $f | tr '\n' ' ')"; done
+  done | sort -u
+  echo "== es"; grep -E '^(VmRSS|VmSwap|RssAnon|RssFile|RssShmem)' /proc/$(pidof emulationstation)/status
+} > "$out/sample.txt"
+# Mappings grouped by backing file / kind: Rss, Pss, Swap (kB).
+awk '/^[0-9a-f]+-[0-9a-f]+ /{name=$6; if(name=="") name="[anon]"; next}
+     /^Rss:/{r[name]+=$2} /^Pss:/{p[name]+=$2} /^Swap:/{s[name]+=$2} /^Size:/{z[name]+=$2}
+     END{for(n in z) printf "%8d %8d %8d %8d %s\n", z[n], r[n], p[n], s[n], n}' /proc/$pid/smaps | sort -k2,2nr -k4,4nr > "$out/maps.txt"
+# Largest single anonymous mappings.
+awk '/^[0-9a-f]+-[0-9a-f]+ /{hdr=$0; name=$6; next} /^Size:/{sz=$2} /^Rss:/{rss=$2} /^Swap:/{if(name=="" ) printf "%8d %8d %8d %s\n", sz, rss, $2, hdr}' /proc/$pid/smaps | sort -nr | head -25 > "$out/anon-top.txt"
+until curl -sf "$api/runningGame" | grep -q 'NO GAME RUNNING'; do sleep 2; done
+echo done

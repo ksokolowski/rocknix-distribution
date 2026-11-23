@@ -1,0 +1,59 @@
+Subject: [PATCH] clk: rockchip: rk3128: program GPLL and CPLL like the vendor loader
+
+Mainline left GPLL at refdiv 2 / postdiv1 2 (VCO 1188 MHz) and never
+touched CPLL, which stayed at the 500 MHz / VCO 500 MHz set before
+U-Boot (below the 600 MHz VCO minimum). Linux keeps both PLLs. On the
+Powkiddy A12 the RGB panel image shook under memory load and games
+showed black vertical lines; swapping only the U-Boot image for the
+vendor one (same kernel and DTB) removed the artefacts.
+
+Use the vendor divisors: GPLL 594 MHz = (1, 99, 4, 1), CPLL 400 MHz =
+(1, 100, 6, 1), and program CPLL in slow mode together with the other
+PLLs, as the vendor rkclk_init does.
+
+Comparison: caesar-u-boot 9724e7aa drivers/clk/rockchip/clk_rk3128.c
+(rk3128_pll_rates, rkclk_init). Existing GPL notices are retained.
+
+--- a/drivers/clk/rockchip/clk_rk3128.c
++++ b/drivers/clk/rockchip/clk_rk3128.c
+@@ -35,7 +35,16 @@
+ 
+ /* use integer mode*/
+ static const struct pll_div apll_init_cfg = PLL_DIVISORS(APLL_HZ, 1, 3, 1);
+-static const struct pll_div gpll_init_cfg = PLL_DIVISORS(GPLL_HZ, 2, 2, 1);
++/*
++ * GPLL and CPLL use the vendor (caesar-u-boot clk_rk3128.c rk3128_pll_rates)
++ * divisors: GPLL 594 MHz with VCO 2376 MHz and CPLL 400 MHz with VCO 2400 MHz
++ * (CRU PLL_CON0/1 0x4063/0x1041 and 0x6064/0x1041). Linux keeps both PLLs.
++ * Leaving GPLL at refdiv 2 (VCO 1188 MHz) and CPLL at the 500 MHz left by the
++ * pre-U-Boot loader (VCO 500 MHz) made the RGB panel image shake under memory
++ * load on the Powkiddy A12.
++ */
++static const struct pll_div gpll_init_cfg = PLL_DIVISORS(GPLL_HZ, 1, 4, 1);
++static const struct pll_div cpll_init_cfg = PLL_DIVISORS(400 * MHz, 1, 6, 1);
+ 
+ static int rkclk_set_pll(struct rk3128_cru *cru, enum rk_clk_id clk_id,
+ 			 const struct pll_div *div)
+@@ -152,9 +161,10 @@
+ 
+ 	/* pll enter slow-mode */
+ 	rk_clrsetreg(&cru->cru_mode_con,
+-		     GPLL_MODE_MASK | APLL_MODE_MASK,
++		     GPLL_MODE_MASK | APLL_MODE_MASK | CPLL_MODE_MASK,
+ 		     GPLL_MODE_SLOW << GPLL_MODE_SHIFT |
+-		     APLL_MODE_SLOW << APLL_MODE_SHIFT);
++		     APLL_MODE_SLOW << APLL_MODE_SHIFT |
++		     CPLL_MODE_SLOW << CPLL_MODE_SHIFT);
+ 
+ 	/* init pll */
+ 	ret = rkclk_set_pll(cru, CLK_ARM, &apll_init_cfg);
+@@ -163,6 +173,9 @@
+ 	ret = rkclk_set_pll(cru, CLK_GENERAL, &gpll_init_cfg);
+ 	if (ret)
+ 		return ret;
++	ret = rkclk_set_pll(cru, CLK_CODEC, &cpll_init_cfg);
++	if (ret)
++		return ret;
+ 
+ 	/*
+ 	 * select apll as cpu/core clock pll source and

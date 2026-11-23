@@ -1,0 +1,9 @@
+[Unit]
+Description=Hardware diagnostics timer
+
+[Timer]
+OnBootSec=45s
+Unit=a12-diagnostics.service
+
+[Install]
+WantedBy=timers.target

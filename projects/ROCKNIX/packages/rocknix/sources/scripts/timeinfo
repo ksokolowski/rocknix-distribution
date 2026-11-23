@@ -9,6 +9,8 @@ function get_timezone() {
 }
 
 function list_timezones() {
+        # zone1970.tab has no UTC; list it so ES can show it as selected.
+        echo "UTC,"
         cat /usr/share/zoneinfo/zone1970.tab | grep -v "^#" | awk '{ print $3"," }' | sort -u
 }
 

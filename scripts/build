@@ -36,6 +36,9 @@ else
   TARGET=
 fi
 TARGET="${TARGET:-target}"
+if [ "${NATIVE_ARM}" = "yes" ] && [ "${TARGET}" = "target" ]; then
+  PKG_STAMP+=" native-arm-library-layout-v1"
+fi
 PARENT_PKG="${2:-${PKG_NAME}:${TARGET}}"
 
 pkg_lock "${PKG_NAME}:${TARGET}" "build" "${PARENT_PKG}"
@@ -169,7 +172,11 @@ TARGET_CMAKE_OPTS="-DCMAKE_TOOLCHAIN_FILE=${CMAKE_CONF} \
 
 case ${ARCH} in
   arm)
-    BUILD_OPTS_TARGET_LIBDIR=/usr/lib32
+    if [ "${NATIVE_ARM}" = "yes" ]; then
+      BUILD_OPTS_TARGET_LIBDIR=/usr/lib
+    else
+      BUILD_OPTS_TARGET_LIBDIR=/usr/lib32
+    fi
     ;;
   *)
     BUILD_OPTS_TARGET_LIBDIR=/usr/lib

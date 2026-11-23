@@ -1,0 +1,22 @@
+Subject: [PATCH] GuiMenu: hide the ZRAM SWAP menu on RK3128
+
+The menu knows lz4 or lz4 + zstd recompression and sizes of 50-150 % of
+RAM. The Powkiddy A12 runs a measured lzo-rle zram with zstd
+recompression of idle pages at a fixed 256 MB: the menu shows its zstd
+switch off and its size as 100 %, and any change replaces that tuning.
+Leave the entry out on RK3128 (ES builds with -D$DEVICE).
+
+--- a/es-app/src/guis/GuiMenu.cpp
++++ b/es-app/src/guis/GuiMenu.cpp
+@@ -2272,7 +2272,11 @@
+ 		});
+ 	}
+ 
++#if !defined(RK3128)
++	// The A12 runs a measured lzo-rle + zstd-recompress zram at a fixed size,
++	// which this menu can neither show nor keep.
+ 	s->addEntry(_("ZRAM SWAP"), true, [this] { openZramSettings(); });
++#endif
+ 
+ #if defined(SM6115)
+ 	// Add option to set gpu max clock speed

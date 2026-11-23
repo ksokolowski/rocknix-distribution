@@ -1,0 +1,133 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Run on A12 as root. Runtime prototype of ALSA-only audio (no PipeWire).
+#   a12-alsa-prototype enable    switch this boot to ALSA dmix + softvol
+#   a12-alsa-prototype disable   restore PipeWire without a reboot
+#   a12-alsa-prototype status
+# Everything except retroarch.cfg lives in /run or is regenerated at boot,
+# so a reboot also reverts it; retroarch.cfg is backed up and restored.
+set -e  # not -u: /etc/profile.d/001-functions uses unset positional parameters
+. /etc/profile.d/001-functions
+state=/storage/.a12-rollback/alsa-prototype
+units="pipewire-pulse.socket pipewire-pulse.service pipewire.socket pipewire.service wireplumber.service"
+ra=/storage/.config/retroarch/retroarch.cfg
+profile=/storage/.config/profile.d/090-ui_service
+dropin=/run/systemd/system/emustation.service.d/90-a12-alsa.conf
+volume_alsa=/run/a12-alsa-volume
+
+# BusyBox mountpoint does not detect a bind-mounted file.
+volume_bound() { grep -q " /usr/bin/volume " /proc/mounts; }
+
+asound() {
+    cat <<'EOF'
+# A12 ALSA-only prototype: software mixing and volume, no daemon.
+pcm.a12_dmix {
+    type dmix
+    ipc_key 3128
+    ipc_perm 0666
+    slave {
+        pcm "hw:0,0"
+        format S32_LE
+        rate 48000
+        channels 2
+        period_size 1024
+        buffer_size 4096
+    }
+}
+pcm.a12_softvol {
+    type softvol
+    slave.pcm "a12_dmix"
+    control {
+        name "Master"
+        card 0
+    }
+    min_dB -50.0
+    max_dB 0.0
+}
+pcm.!default {
+    type plug
+    slave.pcm "a12_softvol"
+}
+ctl.!default {
+    type hw
+    card 0
+}
+EOF
+}
+
+volume_script() {
+    cat <<'EOF'
+#!/bin/bash
+# A12 ALSA prototype of /usr/bin/volume: softvol "Master" instead of pactl.
+. /etc/profile.d/001-functions
+VOLUME=$(get_setting "audio.volume")
+case ${1} in
+  "+"|"up") VOLUME=$(( ${VOLUME:-50} + 5 )) ;;
+  "-"|"down") VOLUME=$(( ${VOLUME:-50} - 5 )) ;;
+  "restore") true ;;
+  *) VOLUME=${1} ;;
+esac
+[ -n "${VOLUME}" ] || VOLUME=50
+(( VOLUME < 0 )) && VOLUME=0
+(( VOLUME > 100 )) && VOLUME=100
+amixer -q -c 0 sset Master "${VOLUME}%"
+set_setting "audio.volume" ${VOLUME}
+EOF
+}
+
+enable() {
+    [ ! -e /run/asound.conf ] || { echo 'already enabled'; exit 0; }
+    mkdir -p "$state"
+    [ -e "$state/retroarch.cfg" ] || cp -a "$ra" "$state/retroarch.cfg"
+    [ -e "$state/090-ui_service" ] || cp -a "$profile" "$state/090-ui_service"
+    systemctl stop emustation.service
+    systemctl stop $units
+    systemctl mask --runtime $units >/dev/null
+    asound > /run/asound.conf
+    # Opening the softvol PCM creates "Master"; zero samples are silent.
+    head -c 192000 /dev/zero | aplay -q -t raw -f S32_LE -r 48000 -c 2 -D default
+    volume_script > "$volume_alsa"
+    chmod 0755 "$volume_alsa"
+    mount --bind "$volume_alsa" /usr/bin/volume
+    /usr/bin/volume restore
+    sed -i 's/^audio_driver = .*/audio_driver = "alsa"/' "$ra"
+    sed -i 's/^export SDL_AUDIODRIVER=.*/export SDL_AUDIODRIVER="alsa"/' "$profile"
+    mkdir -p "${dropin%/*}"
+    printf '[Service]\nEnvironment=SDL_AUDIODRIVER=alsa\n' > "$dropin"
+    systemctl daemon-reload
+    systemctl start emustation.service
+    status
+}
+
+disable() {
+    systemctl stop emustation.service
+    ! volume_bound || umount /usr/bin/volume
+    rm -f /run/asound.conf "$volume_alsa" "$dropin"
+    [ ! -e "$state/retroarch.cfg" ] || cp -a "$state/retroarch.cfg" "$ra"
+    [ ! -e "$state/090-ui_service" ] || cp -a "$state/090-ui_service" "$profile"
+    systemctl unmask --runtime $units >/dev/null
+    systemctl daemon-reload
+    systemctl start pipewire.socket pipewire-pulse.socket pipewire.service wireplumber.service pipewire-pulse.service
+    /usr/bin/volume restore
+    systemctl start emustation.service
+    status
+}
+
+status() {
+    for u in $units emustation.service; do printf '%s=%s ' "$u" "$(systemctl is-active "$u")"; done; echo
+    printf 'asound=%s volume_bind=%s audio_driver=%s ui_profile=%s\n' \
+        "$([ -e /run/asound.conf ] && echo run || echo none)" \
+        "$(volume_bound && echo alsa || echo stock)" \
+        "$(sed -n 's/^audio_driver = //p' "$ra")" \
+        "$(sed -n 's/^export SDL_AUDIODRIVER=//p' "$profile")"
+    amixer -c 0 sget Master 2>/dev/null | tail -1 || true
+    amixer -c 0 cget name='Playback Path' | tail -1
+    printf 'audio.volume=%s\n' "$(get_setting audio.volume)"
+}
+
+case ${1:-status} in
+    enable) enable ;;
+    disable) disable ;;
+    status) status ;;
+    *) echo 'Usage: a12-alsa-prototype enable|disable|status' >&2; exit 1 ;;
+esac

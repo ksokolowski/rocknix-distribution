@@ -1,0 +1,23 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Usage: a12-bench LABEL CORE.so ROM   (stop the frontend first)
+set -eu
+label=$1; core=$2; rom=$3
+here=$(dirname "$0")
+out=${A12_BENCH_OUT:-/storage}/a12-bench-$label.json
+probe=$("$here/a12-perfprobe")
+# Never use `paste`: on ROCKNIX it uploads its input to dpaste.com.
+fps=$("$here/core-benchmark" "$core" "$rom" 2>"$out.stderr" | sed -n 's/.* = \([0-9.]*\) FPS.*/\1/p' | tr '\n' ',' | sed 's/,$//')
+rate() { cat "$1" 2>/dev/null || echo 0; }
+# The rate column moved between kernel 4.4 and 7.1; take the first value above 1 MHz.
+ddr=$(awk '$1 == "clk_ddrc" || $1 == "ddrc" { for (i = 2; i <= NF; i++) if ($i > 1000000) { print $i; exit } }' /sys/kernel/debug/clk/clk_summary 2>/dev/null || echo 0)
+gpu=$(cat /sys/class/devfreq/*gpu*/cur_freq 2>/dev/null | head -n 1 || echo 0)
+mem=$(awk '{ sub(":", "", $1); printf "%s\"%s\": %s", sep, $1, $2; sep=", " }' /proc/meminfo)
+slab=$(sort -k3 -nr /proc/slabinfo 2>/dev/null | head -n 8 | awk '{ printf "%s\"%s %s\"", sep, $1, $3 * $4; sep=", " }')
+cat >"$out" <<JSON
+{"label": "$label", "kernel": "$(uname -r)", "cmdline": "$(tr -d '"' </proc/cmdline)",
+ "boot_id": "$(cat /proc/sys/kernel/random/boot_id)", "probe": $probe,
+ "core_fps": [${fps:-}], "ddr_hz": ${ddr:-0}, "cpu_khz": $(rate /sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq),
+ "gpu_hz": ${gpu:-0}, "meminfo": {$mem}, "slab_top": [$slab]}
+JSON
+echo "$out"

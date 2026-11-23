@@ -33,6 +33,13 @@ PKG_TOOLS="patchelf i2c-tools evtest"
 
 PKG_DEBUG="debug"
 
+if [ "${DEVICE}" = "RK3128" ]; then
+  PKG_DEPENDS_TARGET="${PKG_DEPENDS_TARGET/ mako-osd / }"
+  PKG_UI="emulationstation es-themes textviewer"
+  PKG_UI_TOOLS="fbgrab"
+  PKG_MULTIMEDIA="ffmpeg vlc"
+fi
+
 if [ "${BASE_ONLY}" = "true" ]
 then
   EMULATION_DEVICE=no
@@ -42,10 +49,10 @@ else
   PKG_DEPENDS_TARGET+=" ${PKG_TOOLS} ${PKG_FONTS} ${PKG_SOUND} ${PKG_SYNC} ${PKG_GRAPHICS} ${PKG_UI} ${PKG_UI_TOOLS} ${PKG_MULTIMEDIA} misc-packages"
 
   # GL demos and tools
-  [[ ! -z "${OPENGL_SUPPORT}" ]] && PKG_DEPENDS_TARGET+=" mesa-demos"
+  [ "${OPENGL_SUPPORT}" = "yes" ] && PKG_DEPENDS_TARGET+=" mesa-demos"
 
   # GLmark2
-  [[ ! -z "${OPENGLES_SUPPORT}" ]] && PKG_DEPENDS_TARGET+=" glmark2"
+  [ "${OPENGLES_SUPPORT}" = "yes" ] && PKG_DEPENDS_TARGET+=" glmark2"
 
   # Vulkan demos and tools
   [ "${VULKAN_SUPPORT}" = "yes" ] && PKG_DEPENDS_TARGET+=" vkmark"

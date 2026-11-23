@@ -1,0 +1,20 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Run on A12 (setsid nohup … &): log system state each second during a play session.
+#   a12-session-monitor.sh NAME   (stop: kill the PID in OUT/pid)
+out=/storage/a12-coretest/session-$1; mkdir -p $out; echo $$ > $out/pid
+cat /proc/sys/kernel/random/boot_id > $out/boot.txt
+prev=""
+while :; do
+  t=$(cut -d' ' -f1 /proc/uptime)
+  v=$(awk '/^(pswpin|pswpout|pgmajfault|pgscan_kswapd|pgscan_direct|pgsteal_kswapd|pgsteal_direct|allocstall_normal|compact_stall) /{printf "%s=%s ",$1,$2}' /proc/vmstat)
+  p=$(for r in memory io cpu; do awk -v r=$r '/^some/{split($5,a,"=");s=a[2]} /^full/{split($5,a,"=");f=a[2]} END{printf "%s_some=%s %s_full=%s ",r,s,r,f}' /proc/pressure/$r; done)
+  m=$(awk '/^(MemAvailable|MemFree|SwapFree|Cached|AnonPages|Shmem):/{printf "%s=%s ",$1,$2}' /proc/meminfo)
+  f=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq)
+  echo "$t freq=$f $v$p$m" >> $out/vm.log
+  # per-thread CPU every 2 s (top threads)
+  if [ $(( ${t%.*} % 2 )) = 0 ]; then
+    { echo "== $t"; top -b -n1 -H 2>/dev/null | sed -n '1,4p;8,22p'; } >> $out/top.log
+  fi
+  sleep 1
+done

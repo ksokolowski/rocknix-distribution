@@ -1,0 +1,8 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0
+mkdir -p /storage/.config/profile.d
+cat >/storage/.config/profile.d/090-ui_service <<'EOF'
+UI_SERVICE="emustation.service"
+export SDL_VIDEODRIVER="kmsdrm"
+export SDL_AUDIODRIVER="alsa"
+EOF

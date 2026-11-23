@@ -1,0 +1,42 @@
+Subject: [PATCH] drm: lima: expose per-client GEM memory in fdinfo
+
+Use the existing DRM memory accounting helper, as Panfrost does, to trace
+the A12's unevictable shmem during gameplay. Report allocated object sizes;
+Lima does not implement the optional residency/status callbacks, so these
+are not a measured resident-memory total. No buffer allocation or reclaim
+policy is changed.
+
+Wire both callbacks: DRM_GEM_FOPS does not include a file_operations
+show_fdinfo hook, so the driver callback alone never gets called.
+
+--- a/drivers/gpu/drm/lima/lima_drv.c
++++ b/drivers/gpu/drm/lima/lima_drv.c
+@@ -10,6 +10,7 @@
+ #include <linux/pm_runtime.h>
+ #include <drm/drm_ioctl.h>
+ #include <drm/drm_drv.h>
++#include <drm/drm_file.h>
+ #include <drm/drm_prime.h>
+ #include <drm/lima_drm.h>
+ 
+@@ -254,7 +255,11 @@
+ 	DRM_IOCTL_DEF_DRV(LIMA_CTX_FREE, lima_ioctl_ctx_free, DRM_RENDER_ALLOW),
+ };
+ 
+-DEFINE_DRM_GEM_FOPS(lima_drm_driver_fops);
++static const struct file_operations lima_drm_driver_fops = {
++	.owner = THIS_MODULE,
++	DRM_GEM_FOPS,
++	.show_fdinfo = drm_show_fdinfo,
++};
+ 
+ /*
+  * Changelog:
+@@ -276,6 +281,7 @@
+ 	.patchlevel         = 0,
+ 
+ 	.gem_create_object  = lima_gem_create_object,
++	.show_fdinfo        = drm_show_memory_stats,
+ 	.gem_prime_import_sg_table = drm_gem_shmem_prime_import_sg_table,
+ };
+ 

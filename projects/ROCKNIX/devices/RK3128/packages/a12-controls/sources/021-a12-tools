@@ -1,0 +1,32 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-or-later
+
+# Run after modules are synchronized; remove shortcuts without a backend.
+modules=/storage/.config/modules
+gamelist="${modules}/gamelist.xml"
+remove_tool() {
+  local script="$1"
+  rm -f "${modules}/${script}"
+  if [ -f "${gamelist}" ]; then
+    xmlstarlet ed --inplace -d "/gameList/game[path='./${script}']" "${gamelist}"
+  fi
+}
+
+[ -x /usr/bin/start_portmaster.sh ] || remove_tool "Start PortMaster.sh"
+[ -x /usr/bin/flycast ] || remove_tool "Start Flycast.sh"
+[ -x /usr/bin/hatarisa ] || remove_tool "Start HATARISA.sh"
+[ -x /usr/bin/ppsspp ] || remove_tool "Start PPSSPP.sh"
+[ -x /usr/bin/touchHLE ] || remove_tool "Start touchHLE.sh"
+remove_tool "Start 32bit Retroarch.sh"
+
+# The native /usr/bin/retroarch is ARMv7 on A12, despite the shared menu label.
+cp /usr/share/a12-controls/Start\ Retroarch.sh "${modules}/Start Retroarch.sh"
+chmod 0755 "${modules}/Start Retroarch.sh"
+if [ -f "${gamelist}" ]; then
+  xmlstarlet ed --inplace \
+    -u "/gameList/game[path='./Start 64bit Retroarch.sh']/name" -v "RetroArch (32-bit)" \
+    -u "/gameList/game[path='./Start 64bit Retroarch.sh']/desc" -v "Start the native ARMv7 RetroArch menu." \
+    -u "/gameList/game[path='./Start 64bit Retroarch.sh']/path" -v "./Start Retroarch.sh" \
+    "${gamelist}"
+fi
+rm -f "${modules}/Start 64bit Retroarch.sh"

@@ -10,6 +10,11 @@ PKG_LONGDESC="rsync for cloud storage"
 PKG_TOOLCHAIN="manual"
 
 case ${ARCH} in
+    arm)
+      RCLONE_ARCH="arm-v7"
+      PKG_SHA256="d645c44ec7c485e6d518a0575f2dd4c2b75fd70e547ed367b39bbf9e823c81e4"
+      PKG_SOURCE_NAME="rclone-${PKG_VERSION}-arm-v7.zip"
+    ;;
     aarch64)
       RCLONE_ARCH="arm64"
       PKG_SHA256="b710ac2ded37261d2cc6ab046dcd644828944524cf1ee7c2b17dd746f0fd8684"
@@ -23,14 +28,8 @@ PKG_URL="https://downloads.rclone.org/v${PKG_VERSION}/rclone-v${PKG_VERSION}-lin
 PKG_RCLONE="rclone-v${PKG_VERSION}-linux-${RCLONE_ARCH}/rclone"
 
 unpack() {
-  # Create build directory
   mkdir -p ${PKG_BUILD}
-  # Rename the downloaded zip to include architecture for better tracking
-  mv ${SOURCES}/rclone/rclone-${PKG_VERSION}.zip ${SOURCES}/rclone/rclone-${PKG_VERSION}-${RCLONE_ARCH}.zip
-  # Extract the binary package to the build directory
-  unzip ${SOURCES}/rclone/rclone-${PKG_VERSION}-${RCLONE_ARCH}.zip -d ${PKG_BUILD}/
-  # Remove downloaded zip files to conserve space
-  rm -f ${SOURCES}/rclone/rclone-${PKG_VERSION}*
+  unzip "${SOURCES}/rclone/${PKG_SOURCE_NAME}" -d "${PKG_BUILD}/"
 }
 
 makeinstall_target() {

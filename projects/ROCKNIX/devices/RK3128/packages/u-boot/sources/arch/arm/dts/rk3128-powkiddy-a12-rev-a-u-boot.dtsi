@@ -1,0 +1,41 @@
+// SPDX-License-Identifier: GPL-2.0+
+#include "rk3128-u-boot.dtsi"
+
+/ {
+	pm_enable: regulator-pm-enable {
+		compatible = "regulator-fixed";
+		regulator-name = "pm-enable";
+		regulator-always-on;
+		regulator-boot-on;
+		gpio = <&gpio2 RK_PD5 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		pinctrl-names = "default";
+		pinctrl-0 = <&a12_pm_enable>;
+	};
+};
+
+&pinctrl {
+	a12 {
+		a12_pm_enable: pm-enable {
+			rockchip,pins = <2 RK_PD5 RK_FUNC_GPIO &pcfg_pull_none>;
+		};
+	};
+};
+
+&dmc {
+	/* RK3128 uses one address cell and one size cell. */
+	reg = <0x20004000 0x1000>;
+};
+
+&sdmmc {
+	/delete-property/ dmas;
+	/delete-property/ dma-names;
+	/* Use PIO for the first boot, as in the verified Linux SD setup. */
+	fifo-mode;
+};
+
+&uart0 {
+	/* Retain the upstream 24 MHz baud clock and allow early binding. */
+	clock-frequency = <24000000>;
+	bootph-all;
+};

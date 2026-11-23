@@ -1,0 +1,60 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Lightweight samples in the launch log; no changes to device policies.
+
+launcher="$1"
+case "$launcher" in ''|*[!0-9]*) exit 1 ;; esac
+trap 'exit 0' TERM INT
+sample=0
+
+while kill -0 "$launcher" 2>/dev/null; do
+  printf '\nA12 performance sample; uptime: '
+  cat /proc/uptime
+  awk '/^cpu / || /^procs_running / || /^procs_blocked /' /proc/stat
+  awk '/^(MemTotal|MemFree|MemAvailable|Cached|SwapTotal|SwapFree|Shmem|Unevictable|Mlocked|Slab|SReclaimable|SUnreclaim|CmaTotal|CmaFree):/' /proc/meminfo
+  awk '/^(pswpin|pswpout|pgmajfault) /' /proc/vmstat
+  for pid in $(pidof retroarch); do
+    printf 'retroarch process: '
+    cat "/proc/$pid/stat" 2>/dev/null
+    awk '/^(VmRSS|VmSwap|Threads):/' "/proc/$pid/status" 2>/dev/null
+    if [ "$((sample % 6))" -eq 0 ]; then
+      for task in /proc/$pid/task/*; do
+        printf 'retroarch thread: '
+        cat "$task/stat" 2>/dev/null
+        printf 'wait channel: '
+        cat "$task/wchan" 2>/dev/null
+        printf '\n'
+      done
+    fi
+  done
+  for pid in $(pidof retroarch emulationstation pipewire pipewire-pulse wireplumber); do
+    printf 'process memory: %s ' "$pid"
+    cat "/proc/$pid/comm" 2>/dev/null
+    awk '/^(VmRSS|VmSwap):/' "/proc/$pid/status" 2>/dev/null
+    if [ "$((sample % 6))" -eq 0 ] && [ -r "/proc/$pid/smaps_rollup" ]; then
+      awk '/^(Pss|Pss_Anon|Pss_File|Pss_Shmem|SwapPss):/' "/proc/$pid/smaps_rollup"
+    fi
+    # One reader per process; avoid spawning grep for every open descriptor.
+    awk 'FNR == 1 { gpu = 0 }
+      /^drm-driver:/ { gpu = 1; print FILENAME ":" }
+      gpu { print }' /proc/$pid/fdinfo/* 2>/dev/null
+  done
+  awk '/gpu|i2s|dma|vop/' /proc/interrupts
+  for path in /proc/pressure/cpu /proc/pressure/memory /proc/pressure/io \
+    /sys/devices/system/cpu/cpufreq/policy*/scaling_governor \
+    /sys/devices/system/cpu/cpufreq/policy*/scaling_cur_freq \
+    /sys/class/devfreq/*/governor /sys/class/devfreq/*/cur_freq \
+    /sys/class/devfreq/*/trans_stat /sys/block/zram0/mm_stat \
+    /sys/block/zram0/comp_algorithm /sys/block/zram0/io_stat \
+    /proc/sys/vm/min_free_kbytes /proc/sys/vm/swappiness \
+    /proc/sys/vm/page-cluster \
+    /proc/asound/card*/pcm*p/sub*/hw_params \
+    /proc/asound/card*/pcm*p/sub*/status; do
+    [ -r "$path" ] || continue
+    printf '%s: ' "$path"
+    cat "$path"
+  done
+  [ "$((sample % 6))" -ne 0 ] || a12-register-report
+  sample=$((sample + 1))
+  sleep 5
+done

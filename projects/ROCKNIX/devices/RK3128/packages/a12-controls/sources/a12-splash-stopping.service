@@ -1,0 +1,14 @@
+[Unit]
+Description=Shutdown progress
+# Started by the shutdown transaction itself and left running until
+# systemd's final kill; the shutdown hook then draws the final screen.
+DefaultDependencies=no
+# A stop is ordered before a start: draw after the static shutdown frame.
+After=a12-splash-shutdown.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/a12-splash --stopping
+
+[Install]
+WantedBy=shutdown.target

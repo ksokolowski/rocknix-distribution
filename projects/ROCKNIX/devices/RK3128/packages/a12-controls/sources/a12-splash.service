@@ -1,0 +1,15 @@
+[Unit]
+Description=Boot splash
+DefaultDependencies=no
+Conflicts=shutdown.target
+Before=shutdown.target
+# fbdev (verified) or KMS (a12_kms_splash, A12_NO_FBDEV builds): either one.
+ConditionPathExists=|/dev/fb0
+ConditionPathExists=|/dev/dri/card0
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/a12-splash
+
+[Install]
+WantedBy=sysinit.target

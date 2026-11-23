@@ -1,0 +1,420 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Network watch for the intermittent network loss
+# (plans/2026-10-25-network-drop-analysis.md). Every 10 s it appends one line
+# per sample to <boot id>.log: each network interface's carrier, counters,
+# USB URB count and IPv4 address, the EHCI interrupt count, MemAvailable,
+# memory pressure and (every third sample) a gateway ping. When a link, its
+# address, the gateway or its receive counter goes bad, it writes a snapshot
+# of the kernel, USB, NetworkManager and memory state (at once, after 60 s
+# and after 300 s). It only reads; it never changes the network.
+# A sample starts at most one process per interface (`ip`: no file shows
+# the IPv4 address) and a gateway ping every third sample; the rest is read
+# with the shell's own `read`, and the loop waits with `read -t`. Every new
+# process keeps schedutil at its highest clock.
+# Optional extra logging in /storage/.config/a12-netwatch.conf:
+#   NM_DEBUG=1   NetworkManager debug logging for device, DHCP, IPv4, core
+#   USB_DEBUG=1  dynamic debug for the USB hub, EHCI and the USB PHY driver
+set -u
+sys=${A12_SYS:-/sys}
+proc=${A12_PROC:-/proc}
+directory=${A12_NETWATCH_DIR:-/storage/.cache/a12-diagnostics/netwatch}
+state=${A12_NETWATCH_STATE:-/run/a12-netwatch.state}
+config=${A12_NETWATCH_CONFIG:-/storage/.config/a12-netwatch.conf}
+keepalive=${A12_KEEPALIVE_CONFIG:-/storage/.config/a12-keepalive.conf}
+pmsg=${A12_PMSG:-/dev/pmsg0}
+interval=${A12_NETWATCH_INTERVAL:-10}
+keep_boots=5
+log_max=1048576
+snap_max=9
+rx_stall_samples=6
+
+setting() { # name default
+  value=""
+  [ -r "$config" ] && value=$(sed -n "s/^$1=//p" "$config" | tail -n 1 | tr -d '"')
+  case "$value" in
+    *[!0-9]*|"") printf '%s' "$2" ;;
+    *) printf '%s' "$value" ;;
+  esac
+}
+
+load() { # variable file: the file's first line, or "-" (no fork, for the sampler)
+  eval "$1="
+  { read -r "$1" <"$2"; } 2>/dev/null
+  eval "[ -n \"\${$1}\" ] || $1=-"
+}
+
+get() { # file: print its first line, or "-"
+  load value "$1"
+  printf '%s' "$value"
+}
+
+clock() {
+  load now "$proc/uptime"
+  now=${now%%.*}
+  load boot "$proc/sys/kernel/random/boot_id"
+  log=$directory/$boot.log
+}
+
+interfaces() {
+  for path in "$sys"/class/net/*; do
+    name=${path##*/}
+    [ "$name" = lo ] && continue
+    [ -e "$path/device" ] || continue
+    printf '%s\n' "$name"
+  done
+}
+
+list_interfaces() { # the same list into $ifaces, without a subshell
+  ifaces=""
+  for path in "$sys"/class/net/*; do
+    name=${path##*/}
+    [ "$name" = lo ] && continue
+    [ -e "$path/device" ] || continue
+    ifaces="$ifaces $name"
+  done
+}
+
+ipv4_of() { # interface: its first IPv4 address/prefix into $address, or "-"
+  address=-
+  # Through a file, not $(...): a command substitution adds a subshell.
+  ip -4 -o addr show dev "$1" >"$state.ip" 2>/dev/null
+  read -r -a words <"$state.ip"
+  set -- "${words[@]}"
+  while [ $# -gt 1 ]; do
+    [ "$1" = inet ] && { address=$2; return; }
+    shift
+  done
+}
+
+gateway() { # the default route from /proc/net/route into $target and $target_dev
+  target="" target_dev=""
+  while read -r iface destination via _; do
+    [ "$destination" = 00000000 ] && [ "$via" != 00000000 ] || continue
+    target=$((16#${via:6:2})).$((16#${via:4:2})).$((16#${via:2:2})).$((16#${via:0:2}))
+    target_dev=$iface
+    return
+  done 2>/dev/null <"$proc/net/route"
+}
+
+note() { # message: to the log, the journal and pstore (survives a warm reboot)
+  printf '# %s %s\n' "$now" "$*" >>"$log"
+  logger -t a12-netwatch "$*" 2>/dev/null
+  { printf 'a12-netwatch %s %s %s\n' "$boot" "$now" "$*" >>"$pmsg"; } 2>/dev/null
+}
+
+section() {
+  printf '\n== %s\n' "$*"
+}
+
+run() { # command...: with a header and a time limit (a wedged device can block)
+  section "$*"
+  timeout 15 "$@" 2>&1
+}
+
+show() { # files...
+  for shown; do
+    [ -r "$shown" ] || continue
+    section "$shown"
+    cat "$shown" 2>&1
+  done
+}
+
+wired_counters() {
+  for name in $(interfaces); do
+    [ -d "$sys/class/net/$name/wireless" ] && continue
+    run ethtool -S "$name"
+  done
+}
+
+snapshot() { # reasons
+  file=$directory/$boot-$now.txt
+  {
+    printf 'a12-netwatch snapshot: boot %s, uptime %s s, reasons:%s\n' "$boot" "$now" "$1"
+    section "addresses, routes, ARP"
+    ip link show 2>&1
+    ip addr show 2>&1
+    ip route show 2>&1
+    cat "$proc/net/arp" 2>&1
+    for name in $(interfaces); do
+      path=$sys/class/net/$name
+      section "$name"
+      for attribute in carrier operstate carrier_changes carrier_up_count carrier_down_count mtu; do
+        printf '%s=%s\n' "$attribute" "$(get "$path/$attribute")"
+      done
+      for counter in "$path"/statistics/*; do
+        [ -r "$counter" ] && printf '%s=%s\n' "${counter##*/}" "$(get "$counter")"
+      done
+      printf 'usb urbnum=%s\n' "$(get "$path/device/../urbnum")"
+      if [ -d "$path/wireless" ]; then
+        run iw dev "$name" link
+      else
+        run ethtool "$name"
+        run ethtool --show-eee "$name"
+        run ethtool -i "$name"
+      fi
+      run nmcli -f GENERAL,IP4,DHCP4 device show "$name"
+    done
+    run nmcli -t -f DEVICE,TYPE,STATE,CONNECTION device
+    run nmcli general logging
+    # Hardware counters now and after the probes below: the chip's own
+    # rx_broadcast against the kernel's rx_packets shows where frames stop.
+    wired_counters
+    section "USB devices"
+    for device in "$sys"/bus/usb/devices/*; do
+      [ -r "$device/idVendor" ] || continue
+      printf '%s %s:%s speed=%s urbnum=%s authorized=%s control=%s runtime=%s\n' "${device##*/}" \
+        "$(get "$device/idVendor")" "$(get "$device/idProduct")" "$(get "$device/speed")" \
+        "$(get "$device/urbnum")" "$(get "$device/authorized")" \
+        "$(get "$device/power/control")" "$(get "$device/power/runtime_status")"
+    done
+    for port in "$sys"/bus/usb/devices/usb*/*-0:1.0/usb*-port*; do
+      [ -r "$port/over_current_count" ] && printf '%s over_current_count=%s\n' "${port##*/}" \
+        "$(get "$port/over_current_count")"
+    done
+    show "$sys/kernel/debug/usb/devices"
+    show "$sys"/kernel/debug/usb/ehci/*/registers "$sys"/kernel/debug/usb/ehci/*/async \
+      "$sys"/kernel/debug/usb/ehci/*/periodic
+    section "USB, SD and DMA interrupts, 2 s apart"
+    grep -E 'ehci|ohci|dwc2|dw-mci|dma' "$proc/interrupts" 2>&1
+    sleep 2
+    grep -E 'ehci|ohci|dwc2|dw-mci|dma' "$proc/interrupts" 2>&1
+    section "reachability"
+    gateway
+    if [ -n "$target" ]; then
+      run ping -c 3 -W 2 "$target"
+      [ -n "$target_dev" ] && run arping -I "$target_dev" -c 2 -w 3 "$target"
+    else
+      echo "no default route"
+    fi
+    hosts=""
+    [ -r "$keepalive" ] && hosts=$(sed -n 's/^HOSTS=//p' "$keepalive" | tr -d '"')
+    for host in $hosts; do
+      case "$host" in
+        *[!0-9.]*|"") continue ;;
+      esac
+      run ping -c 2 -W 2 "$host"
+    done
+    wired_counters
+    section "memory"
+    show "$proc/meminfo" "$proc/buddyinfo" "$proc/pressure/memory" "$proc/pressure/cpu" \
+      "$proc/pressure/io" "$sys/block/zram0/mm_stat"
+    grep -E '^(allocstall|compact_|pgmajfault|oom_kill|pswp|workingset_refault)' "$proc/vmstat" 2>&1
+    section "largest processes (VmRSS kB)"
+    awk '/^Name:/ { name = $2 } /^VmRSS:/ { print $2, name }' "$proc"/[0-9]*/status 2>/dev/null |
+      sort -rn | head -n 15
+    run systemctl --no-pager --failed
+    run systemctl show NetworkManager.service iwd.service emustation.service sshd.service \
+      -p Id -p ActiveState -p SubState -p NRestarts -p ExecMainStartTimestampMonotonic
+    run dmesg
+    run journalctl -b --no-pager -o short-monotonic -n 2000
+  } >"$file.new" 2>&1
+  mv "$file.new" "$file"
+  sync
+}
+
+sample() {
+  clock
+  n=0 bad=0 bad_since=0 next_snap=0 episode=0 snaps=0 gw_fail=0 had_gw=0 known="" state_boot=""
+  [ -r "$state" ] && . "$state"
+  if [ "$state_boot" != "$boot" ]; then
+    n=0 bad=0 bad_since=0 next_snap=0 episode=0 snaps=0 gw_fail=0 had_gw=0 known=""
+    for variable in $(set | sed -n 's/^\(if_[A-Za-z0-9_]*\)=.*/\1/p'); do
+      unset "$variable"
+    done
+  fi
+  n=$((n + 1))
+  reasons=""
+  line=$now
+  saved=""
+  present=""
+  list_interfaces
+  for name in $ifaces; do
+    case "$name" in
+      *[!A-Za-z0-9_]*) key=$(printf '%s' "$name" | tr -c 'A-Za-z0-9' '_') ;;
+      *) key=$name ;;
+    esac
+    path=$sys/class/net/$name
+    statistics=$path/statistics
+    load carrier "$path/carrier"
+    load oper "$path/operstate"
+    load changes "$path/carrier_changes"
+    load rx "$statistics/rx_packets"
+    load tx "$statistics/tx_packets"
+    load rxe "$statistics/rx_errors"
+    load rxd "$statistics/rx_dropped"
+    load txe "$statistics/tx_errors"
+    load txd "$statistics/tx_dropped"
+    load urb "$path/device/../urbnum"
+    ipv4_of "$name"
+    line="$line $name:c=$carrier,o=$oper,chg=$changes,rx=$rx,tx=$tx,rxe=$rxe,rxd=$rxd"
+    line="$line,txe=$txe,txd=$txd,urb=$urb,ip=$address"
+    eval "had_carrier=\${if_${key}_carrier:-0} had_ip=\${if_${key}_ip:-0}"
+    eval "last_rx=\${if_${key}_rx:--} same=\${if_${key}_same:-0} moved=\${if_${key}_moved:-0}"
+    [ "$carrier" = 1 ] && had_carrier=1
+    [ "$address" != - ] && had_ip=1
+    if [ "$carrier" = 1 ] && [ "$rx" = "$last_rx" ]; then
+      same=$((same + 1))
+    else
+      same=0
+      [ "$last_rx" != - ] && [ "$rx" != "$last_rx" ] && moved=1
+    fi
+    if [ "$had_carrier" = 1 ] && [ "$carrier" != 1 ]; then
+      reasons="$reasons carrier:$name"
+    elif [ "$had_ip" = 1 ] && [ "$address" = - ]; then
+      reasons="$reasons noip:$name"
+    elif [ "$moved" = 1 ] && [ "$same" -ge "$rx_stall_samples" ]; then
+      reasons="$reasons rxstall:$name"
+    fi
+    saved="${saved}if_${key}_carrier=$had_carrier if_${key}_ip=$had_ip if_${key}_rx=$rx"
+    saved="$saved if_${key}_same=$same if_${key}_moved=$moved
+"
+    present="$present $name"
+    case " $known " in
+      *" $name "*) ;;
+      *) known="$known $name" ;;
+    esac
+  done
+  for name in $known; do
+    case " $present " in
+      *" $name "*) ;;
+      *) reasons="$reasons missing:$name" ;;
+    esac
+  done
+  gw=-
+  if [ $((n % 3)) -eq 0 ]; then
+    gateway
+    if [ -n "$target" ]; then
+      had_gw=1
+      if ping -c 1 -W 2 "$target" >/dev/null 2>&1; then
+        gw=ok
+        gw_fail=0
+      else
+        gw=fail
+        gw_fail=$((gw_fail + 1))
+      fi
+    else
+      gw=none
+      [ "$had_gw" = 1 ] && gw_fail=$((gw_fail + 1))
+    fi
+  fi
+  [ "$gw_fail" -ge 3 ] && reasons="$reasons gateway"
+  ehci=- memavail=- psi=- some="" full=""
+  while read -r _ counts; do
+    case "$counts" in
+      *ehci*)
+        ehci=0
+        for count in $counts; do
+          case "$count" in
+            *[!0-9]*) break ;;
+            *) ehci=$((ehci + count)) ;;
+          esac
+        done
+        break
+        ;;
+    esac
+  done 2>/dev/null <"$proc/interrupts"
+  while read -r key value _; do
+    [ "$key" = MemAvailable: ] && { memavail=$value; break; }
+  done 2>/dev/null <"$proc/meminfo"
+  while read -r kind average _; do
+    case "$kind" in
+      some) some=${average#avg10=} ;;
+      full) full=${average#avg10=} ;;
+    esac
+  done 2>/dev/null <"$proc/pressure/memory"
+  [ -n "$some" ] && psi="$some/$full"
+  printf '%s ehci=%s mem=%s psi=%s gw=%s\n' "$line" "$ehci" "$memavail" "$psi" "$gw" >>"$log"
+  if [ $((n % 60)) -eq 0 ] && [ "$(wc -c <"$log")" -gt "$log_max" ]; then
+    mv "$log" "$log.1"
+  fi
+  if [ -n "$reasons" ]; then
+    if [ "$bad" = 0 ]; then
+      bad=1
+      bad_since=$now
+      episode=0
+      next_snap=$now
+      note "bad:$reasons"
+    fi
+    if [ "$episode" -lt 3 ] && [ "$now" -ge "$next_snap" ] && [ "$snaps" -lt "$snap_max" ]; then
+      snapshot "$reasons"
+      note "snapshot $boot-$now.txt"
+      episode=$((episode + 1))
+      snaps=$((snaps + 1))
+      if [ "$episode" = 1 ]; then
+        next_snap=$((bad_since + 60))
+      else
+        next_snap=$((bad_since + 300))
+      fi
+    fi
+  elif [ "$bad" = 1 ]; then
+    bad=0
+    note "recovered after $((now - bad_since)) s"
+  fi
+  {
+    printf 'state_boot=%s n=%s bad=%s bad_since=%s next_snap=%s episode=%s snaps=%s gw_fail=%s had_gw=%s\n' \
+      "$boot" "$n" "$bad" "$bad_since" "$next_snap" "$episode" "$snaps" "$gw_fail" "$had_gw"
+    printf "known='%s'\n" "$known"
+    printf '%s' "$saved"
+  } >"$state"
+}
+
+prune() { # keep the logs and snapshots of the newest boots
+  ls -t "$directory"/*.log 2>/dev/null | tail -n "+$((keep_boots + 1))" | while read -r old; do
+    id=${old##*/}
+    id=${id%.log}
+    rm -f "$directory/$id.log" "$directory/$id.log.1" "$directory/$id"-*.txt
+  done
+}
+
+extra_logging() {
+  if [ "$(setting NM_DEBUG 0)" = 1 ] &&
+    timeout 10 nmcli general logging level INFO \
+      domains DEFAULT,CORE:DEBUG,DEVICE:DEBUG,DHCP4:DEBUG,IP4:DEBUG,ETHER:DEBUG >/dev/null 2>&1; then
+    note "NetworkManager debug logging on"
+  fi
+  control=$sys/kernel/debug/dynamic_debug/control
+  if [ "$(setting USB_DEBUG 0)" = 1 ] && [ -w "$control" ]; then
+    for source in drivers/usb/core/hub.c drivers/usb/host/ehci-hcd.c drivers/usb/host/ehci-q.c \
+      drivers/usb/host/ehci-hub.c drivers/usb/host/ehci-timer.c \
+      drivers/phy/rockchip/phy-rockchip-inno-usb2.c; do
+      { echo "file $source +p" >"$control"; } 2>/dev/null
+    done
+    note "USB dynamic debug on"
+  fi
+}
+
+mkdir -p "$directory"
+case "${1:-run}" in
+  run)
+    clock
+    touch "$log"
+    prune
+    note "started"
+    extra_logging
+    wait=$state.wait
+    rm -f "$wait"
+    mkfifo "$wait"
+    exec 3<>"$wait"
+    rm -f "$wait"
+    while :; do
+      sample
+      read -r -t "$interval" _ <&3
+    done
+    ;;
+  sample)
+    sample
+    ;;
+  snapshot)
+    clock
+    snapshot " manual"
+    note "snapshot $boot-$now.txt (manual)"
+    ;;
+  prune)
+    prune
+    ;;
+  *)
+    echo "usage: $0 [run|sample|snapshot|prune]" >&2
+    exit 1
+    ;;
+esac

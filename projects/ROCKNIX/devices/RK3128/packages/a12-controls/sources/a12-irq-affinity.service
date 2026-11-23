@@ -1,0 +1,13 @@
+[Unit]
+Description=Interrupt balancing
+DefaultDependencies=no
+After=systemd-modules-load.service
+Before=sysinit.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/a12-irq-affinity
+
+[Install]
+WantedBy=sysinit.target

@@ -1,0 +1,79 @@
+Subject: [PATCH] events: back off in the fallback wait loop
+
+Without a video backend that can wait for events (KMSDRM has no
+WaitEventTimeout), SDL_WaitEventTimeout() pumps events and sleeps
+EVENT_POLL_INTERVAL_MS (1 ms) until the timeout: about 1000 wakeups a
+second while an application waits. On the Powkiddy A12 (Cortex-A7,
+EmulationStation idle at its menu) that loop kept ≈4 % of a core busy
+in poll() (TEST_LOG tests 59–60). A 10 ms sleep there still woke
+EmulationStation about 100 times a second with the screen dark
+(2026-10-28).
+
+Sleep 10 ms while events keep arriving and 100 ms once none has come
+for a second, never past the timeout. Events returned by
+SDL_PollEvent() count as activity, so a menu in use keeps the short
+interval; the first press after idle waits at most 100 ms. Sensor and
+joystick polling intervals are unchanged.
+
+--- a/src/events/SDL_events.c
++++ b/src/events/SDL_events.c
+@@ -42,6 +42,11 @@
+ 
+ /* Determines how often to pump events if joysticks or sensors are actively being read */
+ #define EVENT_POLL_INTERVAL_MS 1
++/* SDL_WaitEventTimeout() without a backend wait (KMSDRM): pump this often,
++   and less often once no event has come for a while. */
++#define EVENT_WAIT_FALLBACK_INTERVAL_MS 10
++#define EVENT_WAIT_IDLE_INTERVAL_MS 100
++#define EVENT_WAIT_IDLE_AFTER_MS 1000
+ 
+ typedef struct SDL_EventWatcher
+ {
+@@ -1064,6 +1069,26 @@
+     return SDL_WaitEventTimeout(event, -1);
+ }
+ 
++static Uint32 SDL_last_wait_event;
++
++static Uint32 SDL_WaitFallbackDelay(Uint32 now, int timeout, Uint32 expiration)
++{
++    Uint32 delay = EVENT_WAIT_FALLBACK_INTERVAL_MS;
++
++    if (SDL_TICKS_PASSED(now, SDL_last_wait_event + EVENT_WAIT_IDLE_AFTER_MS)) {
++        delay = EVENT_WAIT_IDLE_INTERVAL_MS;
++    }
++    if (timeout > 0) {
++        if (SDL_TICKS_PASSED(now, expiration)) {
++            return 1;
++        }
++        if (expiration - now < delay) {
++            delay = expiration - now;
++        }
++    }
++    return delay;
++}
++
+ int SDL_WaitEventTimeout(SDL_Event *event, int timeout)
+ {
+     SDL_VideoDevice *_this = SDL_GetVideoDevice();
+@@ -1107,6 +1132,7 @@
+         }
+     } else {
+         /* Has existing events */
++        SDL_last_wait_event = SDL_GetTicks();
+         return 1;
+     }
+     /* We should have completely handled timeout == 0 above */
+@@ -1144,10 +1170,11 @@
+                 /* Timeout expired and no events */
+                 return 0;
+             }
+-            SDL_Delay(EVENT_POLL_INTERVAL_MS);
++            SDL_Delay(SDL_WaitFallbackDelay(SDL_GetTicks(), timeout, expiration));
+             break;
+         default:
+             /* Has events */
++            SDL_last_wait_event = SDL_GetTicks();
+             return 1;
+         }
+     }

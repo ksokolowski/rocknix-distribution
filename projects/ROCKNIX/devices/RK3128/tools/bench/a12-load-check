@@ -1,0 +1,117 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Run on A12. Does every game load in the core ES starts it with? Each game
+# runs in core-benchmark (no frontend, no display, no audio) for a short
+# warm-up and one 600-frame stage; the result is OK with its speed, or the
+# failure (load failed, crash signal, timeout, bad zip). As RetroArch does,
+# a zip is extracted first when the core does not list zip, and the core's
+# system directory is the BIOS folder. A per-game core from ES's game options
+# (system.cfg) wins over the system default. Frontend stopped, restored on exit.
+#   [A12_LOAD_CORE=core] a12-load-check OUT [SYSTEM...]
+set -u
+root=${A12_ROOT:-}
+base=/storage/a12-coretest
+roms=/storage/roms
+cores=/tmp/cores
+out=$1; shift
+systems=${*:-nes snes gb gbc gba gamegear megadrive pcengine psx mame cps1 cps2 cps3 neogeo msx c64 gameandwatch pc doom}
+[ ! -e "$out" ] || { echo "$out exists" >&2; exit 1; }
+mkdir -p "$out"
+out=$(cd "$out" && pwd)  # logs are written after cd into each ROM folder
+
+# Default core per system, from the image's es_systems and the A12 test file.
+default_core() {
+    cat "$root/usr/config/emulationstation/es_systems.cfg" "$root"/storage/.config/emulationstation/es_systems_*.cfg 2>/dev/null |
+        awk -v s="$1" '/<name>/ { gsub(/.*<name>|<\/name>.*/, ""); n = $0 }
+            n == s && /<core default="true">/ { gsub(/.*">|<\/core>.*/, ""); print; exit }'
+}
+# A system's ROM folder: its es_systems path (colecovision is roms/coleco).
+system_dir() {
+    local dir
+    dir=$(cat "$root/usr/config/emulationstation/es_systems.cfg" "$root"/storage/.config/emulationstation/es_systems_*.cfg 2>/dev/null |
+        awk -v s="$1" '{ l = $0 } l ~ /<name>/ { x = l; gsub(/.*<name>|<\/name>.*/, "", x); n = x }
+            n == s && l ~ /<path>/ { gsub(/.*<path>|<\/path>.*/, "", l); print l; exit }')
+    echo "${dir:-$roms/$1}"
+}
+# The core ES starts a game with: its per-game option, else the default
+# (A12_LOAD_CORE forces one, to compare cores on the same games).
+game_core() {
+    local core
+    [ -z "${A12_LOAD_CORE:-}" ] || { echo "$A12_LOAD_CORE"; return; }
+    core=$(grep -F "$1[\"$2\"].core=" "$root/storage/.config/system/configs/system.cfg" 2>/dev/null | tail -n 1)
+    if [ -n "$core" ]; then echo "${core#*=}"; else default_core "$1"; fi
+}
+# Result from core-benchmark's exit status, stdout (speed) and stderr (the
+# core's log) files. Far above the system's rate (20x) with the core logging
+# errors, it is not emulating: a ROM it cannot run. Light cores (gw) run
+# that fast without errors.
+verdict() {
+    local rc=$1 out=$2 err=$3 fps errors
+    fps=$(sed -n 's/.* = \([0-9.]*\) FPS; target \([0-9.]*\) FPS/\1\/\2/p' "$out" 2>/dev/null | tail -n 1)
+    errors=$(cat "$out" "$err" 2>/dev/null | grep -a -c -i "error")
+    if [ "$rc" -eq 0 ] && [ -n "$fps" ]; then
+        if [ "${errors:-0}" -ge 10 ] && echo "$fps" | awk -F/ '{ exit !($1 > 20 * $2) }'; then
+            echo "SUSPECT $fps"
+        else
+            echo "OK $fps"
+        fi
+    elif [ "$rc" -eq 124 ]; then echo "TIMEOUT"
+    elif [ "$rc" -gt 128 ]; then echo "CRASH-SIG$((rc - 128))"
+    elif grep -a -q "load failed" "$err" "$out" 2>/dev/null; then echo "LOAD-FAILED"
+    else echo "FAIL rc=$rc"; fi
+}
+extensions() {
+    sed -n 's/^supported_extensions = "\(.*\)"/\1/p' "$cores/$1_libretro.info" 2>/dev/null
+}
+
+frontend=$(systemctl is-active emustation.service || true)
+sysdir=/tmp/a12-core-benchmark
+work=/tmp/a12-load-check
+cleanup() {
+    rm -rf "$work" "$sysdir"
+    [ "$frontend" != active ] || systemctl start emustation.service
+}
+trap cleanup EXIT
+trap 'exit 130' INT TERM HUP
+systemctl stop emustation.service
+sleep 3
+rm -rf "$sysdir"; mkdir -p "$sysdir"
+for f in "$roms/bios"/*; do ln -s "$f" "$sysdir/"; done
+cat /proc/sys/kernel/random/boot_id > "$out/boot.txt"
+
+for sys in $systems; do
+    [ -n "$(default_core "$sys")" ] || { echo "$sys - no core" | tee -a "$out/summary.txt"; continue; }
+    dir=$(system_dir "$sys")
+    find "$dir" -maxdepth 1 -type f | sort | while read -r rom; do
+        name=${rom##*/}; ext=$(echo "${name##*.}" | tr A-Z a-z)
+        case "$ext" in xml|txt|srm|state*|png|jpg|mp4|cfg|keep|ini|sh|mcd) continue ;; esac
+        [ "$name" != prboom.wad ] || continue  # the engine's own data, not a game
+        core=$(game_core "$sys" "$name")
+        [ -e "$cores/${core}_libretro.so" ] || { printf '%-12s %-14s NO-CORE  %s\n' "$sys" "$core" "$name" | tee -a "$out/summary.txt"; continue; }
+        exts=$(extensions "$core")
+        content=$rom
+        rm -rf "$work"; mkdir -p "$work"
+        if [ "$ext" = zip ] && ! echo "|$exts|" | grep -q '|zip|'; then
+            case "$sys" in mame|cps1|cps2|cps3|neogeo) ;; *)
+                if ! unzip -q -o "$rom" -d "$work" 2>/dev/null; then
+                    printf '%-12s %-14s BAD-ZIP  %s\n' "$sys" "$core" "$name" | tee -a "$out/summary.txt"; continue
+                fi
+                content=$(find "$work" -type f | while read -r f; do e=$(echo "${f##*.}" | tr A-Z a-z)
+                    echo "|$exts|" | grep -q "|$e|" && { echo "$f"; break; }; done)
+                [ -n "$content" ] || { printf '%-12s %-14s NO-ROM-IN-ZIP  %s\n' "$sys" "$core" "$name" | tee -a "$out/summary.txt"; continue; }
+            ;; esac
+        fi
+        log=$out/$sys-$(echo "${name%.*}" | tr -c 'A-Za-z0-9\n' '_').log
+        # Cores such as snes9x2010 need libm, which RetroArch loads and an
+        # as-needed core-benchmark build may not (load-1, 2026-10-17).
+        # stdout (speed lines last) to $log, stderr to $log.err, each keeping
+        # its last 1 MB (dkongjr in MAME 2003-Plus logged 185 MB of errors).
+        ( ( cd "$dir" && LD_PRELOAD=/usr/lib/libm.so.6 A12_BENCH_WARMUP=180 A12_BENCH_STAGES=1 \
+            timeout 120 "$base/core-benchmark" "$cores/${core}_libretro.so" "$content" 2>&1 1>&3 |
+            tail -c 1000000 > "$log.err"; exit "${PIPESTATUS[0]}" ) 3>&1 |
+          tail -c 1000000 > "$log"; exit "${PIPESTATUS[0]}" )
+        res=$(verdict $? "$log" "$log.err")
+        printf '%-12s %-14s %-22s %s\n' "$sys" "$core" "$res" "$name" | tee -a "$out/summary.txt"
+    done
+done
+touch "$out/complete"

@@ -1,0 +1,91 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-or-later
+"""Every pull/merge request linked in upstream/TRACKER.md, with its state.
+
+One line per submission: tracker ID, request, state, last update, number of
+comments, and "reply?" when the last comment is not the owner's (GitHub only;
+freedesktop shows comment authors only to logged-in users). GitHub goes
+through `gh`, freedesktop GitLab through its public API.
+
+    tools/a12-upstream-status [TRACKER.md]
+"""
+import json
+import pathlib
+import re
+import subprocess
+import sys
+import urllib.parse
+import urllib.error
+import urllib.request
+
+OWNER = "ksokolowski"
+LINK = re.compile(r"https://(github\.com|gitlab\.freedesktop\.org)/([\w.-]+/[\w.-]+)/(?:-/)?(?:pull|merge_requests)/(\d+)")
+ROW = re.compile(r"^\| *([A-Z]+\d+) *\|")
+
+
+def submissions(text):
+    seen, found = set(), []
+    for line in text.splitlines():
+        row = ROW.match(line)
+        if not row:
+            continue
+        for host, project, number in LINK.findall(line):
+            key = (host, project, int(number))
+            if key not in seen:
+                seen.add(key)
+                found.append((row.group(1), host, project, int(number)))
+    return found
+
+
+def needs_reply(authors, owner=OWNER):
+    people = [a for a in authors if not a.endswith("[bot]") and not a.endswith("-bot")]
+    return bool(people) and people[-1] != owner
+
+
+def github(project, number):
+    pr = json.loads(subprocess.run(
+        ["gh", "pr", "view", str(number), "--repo", project, "--json", "state,updatedAt,comments,reviews"],
+        capture_output=True, text=True, check=True).stdout)
+    inline = json.loads(subprocess.run(
+        ["gh", "api", f"repos/{project}/pulls/{number}/comments"],
+        capture_output=True, text=True, check=True).stdout)
+    notes = [(c["createdAt"], c["author"]["login"]) for c in pr["comments"]]
+    notes += [(r["submittedAt"], r["author"]["login"]) for r in pr["reviews"] if r.get("submittedAt")]
+    notes += [(c["created_at"].replace("+00:00", "Z"), c["user"]["login"]) for c in inline]
+    notes.sort()
+    return pr["state"].lower(), pr["updatedAt"][:10], [a for _, a in notes]
+
+
+def gitlab(host, project, number):
+    base = f"https://{host}/api/v4/projects/{urllib.parse.quote(project, safe='')}/merge_requests/{number}"
+    with urllib.request.urlopen(base, timeout=30) as r:
+        mr = json.load(r)
+    # freedesktop lists comments only to logged-in users; the count is public.
+    try:
+        with urllib.request.urlopen(base + "/notes?sort=asc&per_page=100", timeout=30) as r:
+            notes = [n["author"]["username"] for n in json.load(r) if not n["system"]]
+    except urllib.error.HTTPError:
+        notes = [None] * mr["user_notes_count"]
+    return mr["state"], mr["updated_at"][:10], notes
+
+
+def main():
+    tracker = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else
+                           pathlib.Path(__file__).resolve().parent.parent / "upstream/TRACKER.md")
+    for tid, host, project, number in submissions(tracker.read_text()):
+        sep = "#" if host == "github.com" else "!"
+        name = f"{project}{sep}{number}"
+        try:
+            state, updated, authors = github(project, number) if host == "github.com" else gitlab(host, project, number)
+        except Exception as e:
+            print(f"{tid:5} {name:40} error: {e}")
+            continue
+        known = None not in authors
+        flag = "reply?" if state in ("open", "opened") and known and needs_reply(authors) else ""
+        if authors and not known:
+            flag = "(check on the web)"
+        print(f"{tid:5} {name:40} {state:7} {updated} {len(authors):2} comments {flag}")
+
+
+if __name__ == "__main__":
+    main()

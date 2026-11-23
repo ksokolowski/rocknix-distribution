@@ -1,0 +1,156 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Run one GPU-free diagnostic at a time; preserve boot, DDR and player settings.
+set -eu
+root=/storage/bench/display-investigation-2026-10-10
+unit=a12-scanout-test.service
+traffic_unit=a12-scanout-traffic.service
+
+stop_unit() {
+    if [ "$(systemctl show "$1" -p LoadState --value)" != not-found ]; then
+        systemctl stop "$1"
+    fi
+}
+
+guard() {
+    test "$(cat /sys/kernel/debug/clk/dclk_vop/clk_rate)" = 74250000
+    test "$(cat /sys/class/devfreq/dmc/cur_freq)" = 456000000
+    if pidof retroarch olduvai.armhf olduvai-348e56a.armhf >/dev/null; then
+        echo 'A game is running; stop it before starting this observation.' >&2
+        exit 1
+    fi
+}
+
+snapshot() {
+    stage=$1
+    cat /proc/uptime > "$out/$stage-uptime.txt"
+    cat /sys/kernel/debug/dri/0/state > "$out/$stage-drm-state.txt"
+    cat /sys/kernel/debug/clk/clk_summary > "$out/$stage-clocks.txt"
+    cat /proc/interrupts > "$out/$stage-interrupts.txt"
+    dmesg > "$out/$stage-kernel.txt"
+    # No IRQ-enable/clear writes. These are raw samples, not event counters.
+    if grep -q '^[[:space:]]*active=1$' "$out/$stage-drm-state.txt"; then
+        for address in 0x1010e000 0x1010e004 0x1010e008 0x1010e00c \
+                       0x1010e010 0x1010e020 0x1010e028 0x1010e02c \
+                       0x1010e030 0x1010e040 0x1010e044 0x1010e04c \
+                       0x1010e050 0x1010e054 0x1010e084 0x1010e088; do
+            printf '%s ' "$address"
+            devmem "$address" 32
+        done > "$out/$stage-vop.txt"
+    fi
+}
+
+case ${1:-status} in
+inspect)
+    "$root/a12-scanout-probe" inspect
+    ;;
+launch)
+    scenario=${2:-hold}
+    plane=${3:-primary}
+    api=${4:-legacy}
+    seconds=${5:-180}
+    format=${6:-xrgb8888}
+    case "$scenario" in hold|identical|alternate) ;; *) exit 2 ;; esac
+    case "$plane" in primary|cursor) ;; *) exit 2 ;; esac
+    case "$api" in legacy|atomic) ;; *) exit 2 ;; esac
+    case "$format" in xrgb8888|argb8888|rgb565) ;; *) exit 2 ;; esac
+    case "$seconds" in ''|*[!0-9]*) exit 2 ;; esac
+    test "$seconds" -ge 1 && test "$seconds" -le 600
+    test "$plane:$api" != cursor:legacy
+    guard
+    if systemctl is-active --quiet "$unit"; then
+        echo 'A diagnostic is already running; finish it before switching.' >&2
+        exit 1
+    fi
+    systemd-run --unit="$unit" --collect --property=Type=exec \
+        --property=KillMode=mixed --property=TimeoutStopSec=15 --property=RuntimeMaxSec=630 \
+        "$root/a12-scanout-test" run "$scenario" "$plane" "$api" "$seconds" "$format"
+    ;;
+run)
+    guard
+    test "$#" = 6
+    test -x "$root/a12-scanout-probe"
+    frontend=$(systemctl is-active emustation.service || true)
+    out=$(mktemp -d "$root/$2-$3-$4-$6-XXXXXX")
+    printf '%s\n' "$out" > "$root/last-run"
+    printf 'scenario=%s\nplane=%s\napi=%s\nseconds=%s\nformat=%s\n' \
+        "$2" "$3" "$4" "$5" "$6" > "$out/metadata.txt"
+    cat /proc/sys/kernel/random/boot_id /proc/cmdline >> "$out/metadata.txt"
+    sha256sum "$root/a12-scanout-probe" "$root/a12-scanout-test" >> "$out/metadata.txt"
+    probe=
+    cleanup() {
+        trap - EXIT INT TERM HUP
+        stop_unit "$traffic_unit" || true
+        if [ -n "$probe" ] && kill -0 "$probe" 2>/dev/null; then
+            kill -TERM "$probe"
+            wait "$probe" || true
+        fi
+        if [ "$frontend" = active ]; then
+            systemctl start emustation.service || true
+        fi
+    }
+    trap cleanup EXIT
+    trap 'exit 130' INT TERM HUP
+    snapshot before
+    systemctl stop emustation.service
+    cat /sys/kernel/debug/dri/0/state > "$out/fbcon-state.txt"
+    grep -q 'allocated by = \[fbcon\]' "$out/fbcon-state.txt"
+    "$root/a12-scanout-probe" "$2" "$3" "$4" "$5" "$6" > "$out/probe.log" 2>&1 &
+    probe=$!
+    sleep 2
+    snapshot during
+    rc=0
+    wait "$probe" || rc=$?
+    probe=
+    snapshot restored
+    printf 'probe_exit=%s\n' "$rc" >> "$out/metadata.txt"
+    exit "$rc"
+    ;;
+stop)
+    stop_unit "$traffic_unit"
+    stop_unit "$unit"
+    ;;
+traffic)
+    action=${2:-status}
+    case "$action" in
+    start)
+        seconds=${3:-90}
+        case "$seconds" in ''|*[!0-9]*) exit 2 ;; esac
+        test "$seconds" -ge 1 && test "$seconds" -le 90
+        guard
+        systemctl is-active --quiet "$unit"
+        if systemctl is-active --quiet "$traffic_unit"; then
+            echo 'Memory traffic is already running.' >&2
+            exit 1
+        fi
+        out=$(cat "$root/last-run")
+        grep -q '^READY:' "$out/probe.log"
+        printf 'traffic=memtester_16MiB_%ss\ntraffic_start_uptime=' "$seconds" >> "$out/metadata.txt"
+        cat /proc/uptime >> "$out/metadata.txt"
+        systemd-run --unit="$traffic_unit" --collect \
+            --property="RuntimeMaxSec=$seconds" --property=TimeoutStopSec=5 \
+            --property="StandardOutput=file:$out/memory-traffic.log" \
+            --property="StandardError=file:$out/memory-traffic.log" \
+            /usr/bin/memtester 16M
+        ;;
+    stop)
+        stop_unit "$traffic_unit"
+        if [ -r "$root/last-run" ]; then
+            out=$(cat "$root/last-run")
+            printf 'traffic_stopped_uptime=' >> "$out/metadata.txt"
+            cat /proc/uptime >> "$out/metadata.txt"
+        fi
+        ;;
+    status) systemctl show "$traffic_unit" -p ActiveState -p ExecMainStatus -p Result ;;
+    *) exit 2 ;;
+    esac
+    ;;
+status)
+    systemctl show "$unit" -p ActiveState -p ExecMainStatus -p Result
+    if [ -r "$root/last-run" ]; then
+        out=$(cat "$root/last-run")
+        cat "$out/metadata.txt" "$out/probe.log"
+    fi
+    ;;
+*) echo 'Usage: a12-scanout-test inspect|status|stop|launch [hold|identical|alternate] [primary|cursor] [legacy|atomic] [1..600 seconds] [xrgb8888|argb8888|rgb565]; traffic start [1..90 seconds]|stop|status' >&2; exit 2 ;;
+esac

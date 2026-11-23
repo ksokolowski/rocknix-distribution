@@ -15,8 +15,18 @@ unset CURRENT_MODE
 unset AC_STATUS
 ledcontrol $(get_setting led.color)
 
+### Poll without starting processes: every new one keeps schedutil up.
+WAIT=/tmp/.powerstate.wait
+rm -f "${WAIT}"
+mkfifo "${WAIT}"
+exec 3<>"${WAIT}"
+rm -f "${WAIT}"
+
 while true; do
-  AC_STATUS="$(cat /sys/class/power_supply/[bB][aA][tT]*/status 2>/dev/null)"
+  ### The battery driver may register after this service starts.
+  [ -d "${BATDIR}" ] || for BATDIR in /sys/class/power_supply/[bB][aA][tT]*; do break; done
+  AC_STATUS=""
+  read -r AC_STATUS 2>/dev/null <"${BATDIR}/status"
   if [[ ! "${CURRENT_MODE}" =~ ${AC_STATUS} ]]; then
     case ${AC_STATUS} in
       Disch*)
@@ -36,7 +46,8 @@ while true; do
       ;;
       *)
         log $0 "Switching to performance mode."
-        gpu_performance_level auto
+        GPUPROFILE=$(cat /tmp/.gpu_performance_level 2>/dev/null || :)
+        gpu_performance_level "${GPUPROFILE:-auto}"
         if [ "${DEVICE_LED_CHARGING}" = "true" ]; then
           ledcontrol charging
         fi
@@ -45,7 +56,16 @@ while true; do
     CURRENT_MODE="${AC_STATUS}"
   fi
   ### Until we have an overlay. :rofl:
-  BATLEFT=$(battery_percent)
+  BATLEFT=""
+  if [ -f /tmp/battery.percent ]; then
+    read -r BATLEFT </tmp/battery.percent
+  else
+    read -r BATLEFT 2>/dev/null <"${BATDIR}/capacity"
+  fi
+  if ! [[ "${BATLEFT}" =~ ^[0-9]+$ ]]; then
+    read -r -t 2 -u 3 _
+    continue
+  fi
   if (( "${BATCNT}" >= "20" )) && [[ "${AC_STATUS}" =~ Disch ]]; then
     AUDIBLEALERT=$(get_setting system.battery.warning)
     AUDIBLEALERT_THRESHOLD=$(get_setting system.battery.warning_threshold)
@@ -68,5 +88,5 @@ while true; do
     fi
   fi
   BATCNT=$(( ${BATCNT} + 1 ))
-  sleep 2
+  read -r -t 2 -u 3 _
 done

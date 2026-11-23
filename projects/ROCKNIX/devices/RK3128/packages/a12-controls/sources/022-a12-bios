@@ -1,0 +1,43 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-or-later
+
+# Seed blueMSX's machine definitions and databases (shipped in the image,
+# free C-BIOS included) into the BIOS directory, WHDLoad's KickEmu .RTB files
+# (unpacked by uae4arm on its first run; WHDLoad reads them from the BIOS
+# directory) next to the Kickstarts, and the A12's per-game remaps. Files the
+# owner already has are left alone. A12_ROOT is for tests.
+root=${A12_ROOT:-}
+src="${root}/usr/share/bluemsx"
+bios="${root}/storage/roms/bios"
+[ -d "${bios}" ] || exit 0
+if [ -d "${src}" ]; then
+  for dir in Machines Databases; do
+    [ -d "${src}/${dir}" ] && [ ! -e "${bios}/${dir}" ] || continue
+    cp -a "${src}/${dir}" "${bios}/"
+  done
+fi
+for rtb in "${root}"/storage/roms/amiga/WHDLoad/Devs/Kickstarts/*.RTB; do
+  [ -f "${rtb}" ] && [ ! -e "${bios}/${rtb##*/}" ] && cp -a "${rtb}" "${bios}/"
+done
+remaps="${root}/usr/share/a12-remaps"
+for rmp in "${remaps}"/*/*.rmp; do
+  [ -f "${rmp}" ] || continue
+  dst="${root}/storage/remappings/${rmp#"${remaps}"/}"
+  [ -e "${dst}" ] && continue
+  mkdir -p "${dst%/*}" && cp -a "${rmp}" "${dst}"
+done
+# ScummVM prefers Roland MT-32 music (Munt) only with both of the owner's
+# ROMs in the BIOS folder; without them mt32_device=mt32 leaves MT-32 games
+# with no music. Another device the owner picked is left alone.
+ini="${root}/storage/.config/scummvm/scummvm.ini"
+if [ -f "${ini}" ]; then
+  want=null
+  [ -f "${bios}/MT32_CONTROL.ROM" ] && [ -f "${bios}/MT32_PCM.ROM" ] && want=mt32
+  have=$(sed -n '/^\[scummvm\]/,/^\[/s/^mt32_device=//p' "${ini}" | head -n 1)
+  if [ -z "${have}" ]; then
+    sed -i "/^\[scummvm\]/a mt32_device=${want}" "${ini}"
+  elif [ "${have}" != "${want}" ] && { [ "${have}" = mt32 ] || [ "${have}" = null ]; }; then
+    sed -i "/^\[scummvm\]/,/^\[/s/^mt32_device=.*/mt32_device=${want}/" "${ini}"
+  fi
+fi
+exit 0

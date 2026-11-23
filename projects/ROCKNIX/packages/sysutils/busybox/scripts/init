@@ -483,8 +483,33 @@ hdmi_con() {
   fi
 }
 
+# Powkiddy A12 (a12_kms_splash, B12): draw the logo on KMS with the system
+# image's a12-splash, run through that image's own loader; rocknix-splash
+# (fbdev) otherwise or if it fails.
+a12_kms_logo() {
+  local loader
+  [ "${A12_KMS_SPLASH}" = "yes" ] || return 1
+  # The initramfs's own tool (no fbdev builds): no system image needed.
+  if [ -x /usr/bin/a12-update-splash ]; then
+    /usr/bin/a12-update-splash "" && return 0
+  fi
+  [ -x /sysroot/usr/bin/a12-splash ] || return 1
+  loader=$(ls /sysroot/usr/lib/ld-linux*.so.* 2>/dev/null | head -n 1)
+  [ -n "${loader}" ] || return 1
+  A12_SPLASH_LOGO=/sysroot/usr/share/a12-splash/logo.bmp \
+    "${loader}" --library-path /sysroot/usr/lib /sysroot/usr/bin/a12-splash --logo
+}
+
+# Powkiddy A12 (a12_kms_splash): the display driver is built in and ready
+# before /init, so draw the logo first, before modules, disk checks and
+# mounts (test 61); load_splash draws it again. Other devices: no-op.
+a12_early_logo() {
+  [ "${A12_KMS_SPLASH}" = "yes" ] && [ -x /usr/bin/a12-update-splash ] && /usr/bin/a12-update-splash ""
+  return 0
+}
+
 load_splash() {
-  /usr/bin/rocknix-splash
+  a12_kms_logo || /usr/bin/rocknix-splash
 
   echo -en "\033[1000H\033[2K$(cat /sysroot/etc/issue)\n\n" >/dev/console
   if [ -f "/storage/.configured" ]
@@ -1221,6 +1246,9 @@ for arg in $(cat /proc/cmdline); do
     debugging)
       DEBUG=yes
       ;;
+    a12_kms_splash)
+      A12_KMS_SPLASH=yes
+      ;;
     recovery)
       FORCE_RECOVERY=yes
       ;;
@@ -1294,6 +1322,7 @@ debug_msg "Unique identifier for this client: ${MACHINE_UID:-NOT AVAILABLE}"
 
 # main boot sequence
 for BOOT_STEP in \
+    a12_early_logo \
     load_modules \
     recovery_mode \
     check_disks \

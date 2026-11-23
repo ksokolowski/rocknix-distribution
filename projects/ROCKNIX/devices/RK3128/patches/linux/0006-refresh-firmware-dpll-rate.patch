@@ -1,0 +1,20 @@
+Subject: [PATCH] clk: rockchip: rk3128: read firmware-owned DPLL rate
+
+The A12's retained TEE changes DPLL during SIP_V2 DDR transitions. Recalculate
+the PLL and its descendants when queried so clk_summary does not keep the
+loader's 600 MHz DPLL / 300 MHz DDR values after a firmware switch.
+The DDR devfreq driver also queries DPLL after each verified transition.
+This flag grants no Linux-side DPLL rate control.
+
+--- a/drivers/clk/rockchip/clk-rk3128.c
++++ b/drivers/clk/rockchip/clk-rk3128.c
+@@ -158,7 +158,8 @@
+ static struct rockchip_pll_clock rk3128_pll_clks[] __initdata = {
+ 	[apll] = PLL(pll_rk3036, PLL_APLL, "apll", mux_pll_p, 0, RK2928_PLL_CON(0),
+ 		     RK2928_MODE_CON, 0, 1, 0, rk3128_pll_rates),
+-	[dpll] = PLL(pll_rk3036, PLL_DPLL, "dpll", mux_pll_p, 0, RK2928_PLL_CON(4),
++	[dpll] = PLL(pll_rk3036, PLL_DPLL, "dpll", mux_pll_p,
++		     CLK_GET_RATE_NOCACHE, RK2928_PLL_CON(4),
+ 		     RK2928_MODE_CON, 4, 0, 0, NULL),
+ 	[cpll] = PLL(pll_rk3036, PLL_CPLL, "cpll", mux_pll_p, 0, RK2928_PLL_CON(8),
+ 		     RK2928_MODE_CON, 8, 2, 0, rk3128_pll_rates),
