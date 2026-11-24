@@ -40,6 +40,15 @@ hidecursor() {
 # [countdown]
 #   $3: number of seconds to start counting down from
 #   $4: optional completion message, default is nothing
+# Powkiddy A12 without fbdev: the console is invisible, so the progress
+# meters also draw on KMS through the A12 initramfs's a12-update-splash.
+# Other devices have no such binary.
+A12_UPDATE_SPLASH="${A12_UPDATE_SPLASH:-/usr/bin/a12-update-splash}"
+a12_update_splash() {
+  [ -x "${A12_UPDATE_SPLASH}" ] && "${A12_UPDATE_SPLASH}" "$@" >/dev/null 2>&1
+  return 0
+}
+
 StartProgress() {
   local cmdresult=0
 
@@ -100,6 +109,7 @@ ProgressTask_Spinner() {
   local count=0 donemsg
 
   echo -n "${msg} "
+  a12_update_splash "${msg}"
 
   while [ ! -f /dev/.progress/stop ]; do
     echo -en "\b${spinner:$count:1}"
@@ -117,15 +127,19 @@ ProgressTask_Spinner() {
 
 # Use this task when transferring a file of known size
 ProgressTask_Percent() {
-  local msg="$1" filename="$2" fsize=$3 csize donemsg
+  local msg="$1" filename="$2" fsize=$3 csize donemsg tick=0
 
   echo -n "${msg}    "
 
   while [ ! -f /dev/.progress/stop ]; do
     [ -f ${filename} ] && csize=$(stat -t "${filename}" | awk '{print $2}') || csize=0
     echo $csize $fsize | awk '{ printf "\b\b\b\b%3d%%", ($1 * 100 / $2) }'
+    # About once a second (every fourth poll).
+    [ $((tick % 4)) -eq 0 ] && a12_update_splash "${msg}" "$(echo $csize $fsize | awk '{ printf "%d", ($1 * 100 / $2) }')"
+    tick=$((tick + 1))
     usleep 250000
   done
+  a12_update_splash "${msg}" 100
 
   donemsg="$(cat /dev/.progress/stop)"
   echo -e "\b\b\b\b${donemsg:-100%}"

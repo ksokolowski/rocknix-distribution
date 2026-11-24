@@ -12,7 +12,7 @@ PKG_TOOLCHAIN='manual'
 
 make_target() {
   cd ${PKG_BUILD}/runtimes/native
-  cmake -B build -DBUILD_TARGET=wasm4_libretro
+  cmake -B build -DBUILD_TARGET=wasm4_libretro -DCMAKE_SHARED_LINKER_FLAGS="-lm"
   cmake --build build --target wasm4_libretro
 }
 

@@ -1,0 +1,40 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-or-later
+
+# Run after modules are synchronized; remove shortcuts without a backend.
+# 001-sync-modules restores the image's menu on every boot, so the edits
+# are made every time. xmlstarlet costs about 0.3 s per start on the A12:
+# all edits go in one start, and only for entries the menu has.
+# A12_ROOT is for tests.
+root=${A12_ROOT:-}
+modules="${root}/storage/.config/modules"
+gamelist="${modules}/gamelist.xml"
+edits=()
+listed() {
+  [ -f "${gamelist}" ] && grep -qF "<path>./$1</path>" "${gamelist}"
+}
+remove_tool() {
+  local script="$1"
+  rm -f "${modules}/${script}"
+  listed "${script}" && edits+=(-d "/gameList/game[path='./${script}']")
+}
+
+[ -x "${root}/usr/bin/start_portmaster.sh" ] || remove_tool "Start PortMaster.sh"
+[ -x "${root}/usr/bin/flycast" ] || remove_tool "Start Flycast.sh"
+[ -x "${root}/usr/bin/hatarisa" ] || remove_tool "Start HATARISA.sh"
+[ -x "${root}/usr/bin/ppsspp" ] || remove_tool "Start PPSSPP.sh"
+[ -x "${root}/usr/bin/touchHLE" ] || remove_tool "Start touchHLE.sh"
+remove_tool "Start 32bit Retroarch.sh"
+
+# The native /usr/bin/retroarch is ARMv7 on A12, despite the shared menu label.
+cp "${root}/usr/share/a12-controls/Start Retroarch.sh" "${modules}/Start Retroarch.sh"
+chmod 0755 "${modules}/Start Retroarch.sh"
+if listed "Start 64bit Retroarch.sh"; then
+  edits+=(-u "/gameList/game[path='./Start 64bit Retroarch.sh']/name" -v "RetroArch (32-bit)"
+          -u "/gameList/game[path='./Start 64bit Retroarch.sh']/desc" -v "Start the native ARMv7 RetroArch menu."
+          -u "/gameList/game[path='./Start 64bit Retroarch.sh']/path" -v "./Start Retroarch.sh")
+fi
+rm -f "${modules}/Start 64bit Retroarch.sh"
+
+[ "${#edits[@]}" -gt 0 ] && xmlstarlet ed --inplace "${edits[@]}" "${gamelist}"
+exit 0

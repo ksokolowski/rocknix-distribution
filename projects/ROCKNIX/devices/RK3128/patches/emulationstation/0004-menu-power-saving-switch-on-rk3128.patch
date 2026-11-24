@@ -1,0 +1,27 @@
+Subject: [PATCH] GuiMenu: power saving switch on RK3128
+
+One switch for the A12 power policy (a12.powersave): off disables idle
+mode and the brightness per power source; games are not affected.
+
+--- a/es-app/src/guis/GuiMenu.cpp
++++ b/es-app/src/guis/GuiMenu.cpp
+@@ -1984,6 +1984,19 @@
+ 	  }
+ 	}
+ 
++#if defined(RK3128)
++	// The A12's power policy (a12-controls, a12-power): dim on battery, screen
++	// off when idle; games keep full speed.
++	auto power_saving = std::make_shared<SwitchComponent>(mWindow);
++	power_saving->setState(SystemConf::getInstance()->get("a12.powersave") != "0");
++	s->addWithDescription(_("POWER SAVING"), _("Dims the screen on battery and turns it off when idle. Games always run at full speed."), power_saving);
++	s->addSaveFunc([power_saving]
++	{
++		if (power_saving->changed())
++			SystemConf::getInstance()->set("a12.powersave", power_saving->getState() ? "1" : "0");
++	});
++#endif
++
+ #if defined(ROCKNIX)
+ 	// Bottom screen content - only visible when 2+ displays detected
+   if (Utils::Platform::GetEnv("DEVICE_HAS_DUAL_SCREEN") == "true"){

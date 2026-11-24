@@ -37,12 +37,28 @@ PKG_CONFIGURE_OPTS_TARGET="--disable-qt \
                            --disable-vg \
                            --disable-sdl \
                            --enable-sdl2 \
-                           --enable-kms \
-                           --enable-ffmpeg"
+                           --enable-kms"
+
+if [ "${PIPEWIRE_SUPPORT}" != "yes" ]; then
+  PKG_CONFIGURE_OPTS_TARGET+=" --disable-pipewire"
+fi
+
+if [ "${GLES_VERSION}" = "2" ]; then
+  PKG_CONFIGURE_OPTS_TARGET+=" --disable-ffmpeg"
+else
+  PKG_CONFIGURE_OPTS_TARGET+=" --enable-ffmpeg"
+fi
 
 case ${ARCH} in
   arm) PKG_CONFIGURE_OPTS_TARGET+=" --enable-neon" ;;
   aarch64) PKG_CONFIGURE_OPTS_TARGET+=" --disable-neon" ;;
+esac
+
+case ${DEVICE} in
+  RK3128)
+    # The A12's 256 MiB budget needs the lightweight menu only.
+    PKG_CONFIGURE_OPTS_TARGET+=" --enable-rgui --disable-ozone --disable-xmb --disable-materialui"
+    ;;
 esac
 
 if [ "${DISPLAYSERVER}" = "wl" ]; then
@@ -63,7 +79,11 @@ fi
 if [ "${OPENGLES_SUPPORT}" = "yes" ] && [ "${PREFER_GLES}" = "yes" ]; then
   PKG_DEPENDS_TARGET+=" ${OPENGLES}"
   # --enable-opengles3 required for glcore, --enable-opengles3_1 doesn't auto-select it
-  PKG_CONFIGURE_OPTS_TARGET+=" --enable-opengles --enable-opengles3 --enable-opengles3_1"
+  if [ "${GLES_VERSION}" = "2" ]; then
+    PKG_CONFIGURE_OPTS_TARGET+=" --enable-opengles --disable-opengles3 --disable-opengles3_1 --disable-opengles3_2"
+  else
+    PKG_CONFIGURE_OPTS_TARGET+=" --enable-opengles --enable-opengles3 --enable-opengles3_1"
+  fi
   PKG_CONFIGURE_OPTS_TARGET+=" --disable-opengl"
 else
   # Full OpenGL

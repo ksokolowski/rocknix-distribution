@@ -1,0 +1,32 @@
+Subject: [PATCH] arm_neon: mark the assembly stack non-executable
+
+None of the hand-written ARM files (modules/arm_neon/*.S and
+video_filter/deinterlace/merge_arm.S, which all include asm.S) has a
+.note.GNU-stack section, so the linker assumes they need an executable
+stack and marks every plugin built from them GNU_STACK RWE. Since glibc
+2.41 dlopen() no longer makes the stack executable and refuses such a
+library ("cannot enable executable stack as shared object requires"):
+the NEON chroma, volume and channel mixer plugins and the deinterlace
+filter never load.
+
+Add the note in asm.S. No function in these files runs code from the
+stack.
+
+Found on the Powkiddy A12 (RK3128, Cortex-A7, glibc 2.44) with cvlc -vv.
+--- a/modules/arm_neon/asm.S
++++ b/modules/arm_neon/asm.S
+@@ -30,6 +30,14 @@
+ #   define HAVE_AS_FPU_DIRECTIVE  1
+ #endif
+ 
++#ifdef __ELF__
++/* No hand-written function here needs an executable stack: say so, or the
++ * linker marks every plugin built from these files GNU_STACK RWE and glibc
++ * (2.41 and later) refuses to dlopen() it. */
++	.pushsection .note.GNU-stack,"",%progbits
++	.popsection
++#endif
++
+ .macro  function name
+ 	.globl  EXTERN_ASM\name
+ #ifdef __ELF__

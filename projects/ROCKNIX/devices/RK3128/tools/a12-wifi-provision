@@ -1,0 +1,29 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Keep test Wi-Fi credentials out of the repository but always available:
+#   a12-wifi-provision capture DIR           save them from the running A12 over SSH
+#   a12-wifi-provision install STORAGE DIR   seed a mounted STORAGE partition (run as root)
+set -euo pipefail
+here=$(cd "$(dirname "$0")" && pwd)
+ssh_cmd=${A12_SSH:-$here/a12-ssh}
+files=(.config/NetworkManager/system-connections .config/a12-keepalive.conf)
+case "${1:-}" in
+  capture)
+    dir=$2
+    mkdir -p "$dir"
+    chmod 700 "$dir"
+    "$ssh_cmd" "cd /storage && tar -cf - ${files[*]} .cache/iwd/*.psk" | tar -xf - -C "$dir"
+    ;;
+  install)
+    storage=$2; dir=$3
+    found=$(cd "$dir" && find . -type f \( -name '*.nmconnection' -o -name '*.psk' \) | wc -l)
+    [ "$found" -gt 0 ] || { echo "no saved networks in $dir" >&2; exit 1; }
+    (cd "$dir" && find . -type f) | while read -r name; do
+      install -D -m 600 "$dir/$name" "$storage/$name"
+    done
+    ;;
+  *)
+    sed -n '3,5p' "$0" >&2
+    exit 2
+    ;;
+esac

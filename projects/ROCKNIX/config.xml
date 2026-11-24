@@ -1,4 +1,9 @@
 <rocknix>
+  <RK3128 dtb_prefix="rockchip" fdt="device_trees/rk3128-powkiddy-a12-rev-a.dtb" fdt_type="fdt">
+    <Powkiddy_A12 mkimage_options="dtb,extlinux,uboot">
+      <file full="Powkiddy A12 revision A" short="Powkiddy A12" rotation="0">rk3128-powkiddy-a12-rev-a</file>
+    </Powkiddy_A12>
+  </RK3128>
   <H700 dtb_prefix="allwinner">
     <DDR4 mkimage_options="dtb,extlinux,uboot" fdt="dtb.img" fdt_type="fdt">
         <file>sun50i-h700-anbernic-rg35xx-plus</file>

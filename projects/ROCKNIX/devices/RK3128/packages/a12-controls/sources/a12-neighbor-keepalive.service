@@ -1,0 +1,9 @@
+[Unit]
+Description=Network neighbour announcement
+After=network-online.target
+# The RTL8188EU ARP problem is Wi-Fi only; systemd checks this itself.
+ConditionPathExistsGlob=/sys/class/net/wlan*
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/a12-neighbor-keepalive

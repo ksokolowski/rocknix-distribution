@@ -8,6 +8,7 @@ PKG_LICENSE="MIT"
 PKG_SITE="https://github.com/PortsMaster/PortMaster-GUI"
 PKG_URL="${PKG_SITE}/releases/download/${PKG_VERSION}/PortMaster.zip"
 PKG_DEPENDS_TARGET="toolchain rocknix-hotkey gamecontrollerdb oga_controls control-gen xmlstarlet list-guid gst-plugins-base zip"
+[ "${ARCH}" = "arm" ] && PKG_DEPENDS_TARGET="${PKG_DEPENDS_TARGET/ gst-plugins-base/}"
 PKG_LONGDESC="Portmaster - a simple tool that allows you to download various game ports"
 PKG_TOOLCHAIN="manual"
 
@@ -25,8 +26,10 @@ makeinstall_target() {
   mkdir -p ${INSTALL}/usr/config/PortMaster/release
     curl -Lo ${INSTALL}/usr/config/PortMaster/release/PortMaster.zip ${PKG_URL}
 
-  mkdir -p ${INSTALL}/usr/lib/compat
-    curl -Lo ${PKG_BUILD}/compat.tar.gz ${COMPAT_URL}
-    tar -xvf ${PKG_BUILD}/compat.tar.gz -C ${INSTALL}/usr/lib
-    rm -rf ${INSTALL}/usr/lib/compat/libSDL2-2.0.so.0*
+  if [ "${ARCH}" = "aarch64" ]; then
+    mkdir -p ${INSTALL}/usr/lib/compat
+      curl -Lo ${PKG_BUILD}/compat.tar.gz ${COMPAT_URL}
+      tar -xvf ${PKG_BUILD}/compat.tar.gz -C ${INSTALL}/usr/lib
+      rm -rf ${INSTALL}/usr/lib/compat/libSDL2-2.0.so.0*
+  fi
 }

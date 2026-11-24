@@ -1,0 +1,68 @@
+Subject: [PATCH] drm/rockchip, panel, backlight: keep the A12 screen lit at power-off
+
+The Powkiddy A12 is switched off by a latching power switch; after a
+menu shutdown it shows "It is safe to turn off your device". Linux's
+power-off path runs the shutdown hooks of the Rockchip DRM driver, the
+A12 panel and pwm-backlight, which blanked that screen. On the A12 (by
+board compatible) and only for power-off, skip them; reboot and halt
+behave as before.
+
+--- a/drivers/gpu/drm/panel/panel-a12.c
++++ b/drivers/gpu/drm/panel/panel-a12.c
+@@ -168,6 +168,10 @@
+ {
+ 	struct a12_panel *p = platform_get_drvdata(pdev);
+ 
++	/* The A12's latching switch removes power: keep the final screen
++	 * ("It is safe to turn off your device") lit at power-off. */
++	if (system_state == SYSTEM_POWER_OFF)
++		return;
+ 	drm_panel_disable(&p->panel);
+ 	a12_unprepare(&p->panel);
+ }
+--- a/drivers/gpu/drm/rockchip/rockchip_drm_drv.c
++++ b/drivers/gpu/drm/rockchip/rockchip_drm_drv.c
+@@ -11,6 +11,7 @@
+ #include <linux/platform_device.h>
+ #include <linux/pm_runtime.h>
+ #include <linux/module.h>
++#include <linux/of.h>
+ #include <linux/of_graph.h>
+ #include <linux/of_platform.h>
+ #include <linux/component.h>
+@@ -488,6 +489,12 @@
+ 
+ static void rockchip_drm_platform_shutdown(struct platform_device *pdev)
+ {
++	/* Powkiddy A12: power is removed by a latching switch; keep scanning
++	 * out the final shutdown screen instead of blanking it. */
++	if (system_state == SYSTEM_POWER_OFF &&
++	    of_machine_is_compatible("powkiddy,a12-rev-a"))
++		return;
++
+ 	if (component_master_is_bound(&pdev->dev, &rockchip_drm_ops)) {
+ 		struct drm_device *drm = platform_get_drvdata(pdev);
+ 
+--- a/drivers/video/backlight/pwm_bl.c
++++ b/drivers/video/backlight/pwm_bl.c
+@@ -8,6 +8,7 @@
+ #include <linux/delay.h>
+ #include <linux/gpio/consumer.h>
+ #include <linux/module.h>
++#include <linux/of.h>
+ #include <linux/kernel.h>
+ #include <linux/init.h>
+ #include <linux/platform_device.h>
+@@ -635,6 +636,12 @@
+ 	struct pwm_bl_data *pb = bl_get_data(bl);
+ 	struct pwm_state state;
+ 
++	/* Powkiddy A12: keep the final shutdown screen visible until the
++	 * latching power switch is pressed. */
++	if (system_state == SYSTEM_POWER_OFF &&
++	    of_machine_is_compatible("powkiddy,a12-rev-a"))
++		return;
++
+ 	pwm_backlight_power_off(pb);
+ 	pwm_get_state(pb->pwm, &state);
+ 	state.duty_cycle = 0;

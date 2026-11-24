@@ -7,10 +7,14 @@
 
 tocon "Configuring Audio..."
 
-STATE=$(systemctl is-active pipewire-pulse)
-if [ "${STATE}" = "inactive" ]
+### Devices without PipeWire (PIPEWIRE_SUPPORT=no) play through ALSA directly.
+if systemctl is-enabled --quiet pipewire-pulse.service
 then
-  systemctl start pipewire-pulse
+  STATE=$(systemctl is-active pipewire-pulse)
+  if [ "${STATE}" = "inactive" ]
+  then
+    systemctl start pipewire-pulse
+  fi
 fi
 
 ### Auto switch between internal and bluetooth devices

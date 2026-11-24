@@ -1,0 +1,107 @@
+Subject: [PATCH] clk: rockchip: rk3128: wait for active-high PLL lock
+
+RK312X TRM section 3.9.2 defines PLL_CON1[10] as active-high LOCK.
+The existing loop waits while the PLL is locked and skips the wait
+while unlocked. The working vendor driver polls for a set bit.
+
+Correct the condition, bound the wait to 1 ms (the TRM specifies at
+most 1500 reference-clock cycles), and propagate errors instead of
+switching to normal mode or claiming a successful clock probe.
+
+Reference: Rockchip RK312X TRM, chapter 3, section 3.9.2:
+https://rockchip.fr/RK312X%20TRM/chapter-03-clock-and-reset-unit.pdf
+Comparison: caesar-u-boot 9724e7aa drivers/clk/rockchip/clk_pll.c
+(rk3036_pll_set_rate). Existing GPL notices are retained.
+
+--- a/drivers/clk/rockchip/clk_rk3128.c
++++ b/drivers/clk/rockchip/clk_rk3128.c
+@@ -41,6 +41,7 @@
+ 			 const struct pll_div *div)
+ {
+ 	int pll_id = rk_pll_id(clk_id);
++	int timeout = 1000;
+ 	struct rk3128_pll *pll = &cru->pll[pll_id];
+ 
+ 	/* All PLLs have same VCO and output frequency range restrictions. */
+@@ -68,9 +69,12 @@
+ 	/* Power Up */
+ 	rk_clrreg(&pll->con1, 1 << PLL_PD_SHIFT);
+ 
+-	/* waiting for pll lock */
+-	while (readl(&pll->con1) & (1 << PLL_LOCK_STATUS_SHIFT))
++	/* LOCK is active high; allow up to 1 ms for the PLL to settle. */
++	while (!(readl(&pll->con1) & PLL_LOCK_STATUS_MASK)) {
++		if (!timeout--)
++			return -ETIMEDOUT;
+ 		udelay(1);
++	}
+ 
+ 	return 0;
+ }
+@@ -139,8 +143,9 @@
+ 	return 0;
+ }
+ 
+-static void rkclk_init(struct rk3128_cru *cru)
+-{
++static int rkclk_init(struct rk3128_cru *cru)
++{
++	int ret;
+ 	u32 aclk_div;
+ 	u32 hclk_div;
+ 	u32 pclk_div;
+@@ -152,8 +157,12 @@
+ 		     APLL_MODE_SLOW << APLL_MODE_SHIFT);
+ 
+ 	/* init pll */
+-	rkclk_set_pll(cru, CLK_ARM, &apll_init_cfg);
+-	rkclk_set_pll(cru, CLK_GENERAL, &gpll_init_cfg);
++	ret = rkclk_set_pll(cru, CLK_ARM, &apll_init_cfg);
++	if (ret)
++		return ret;
++	ret = rkclk_set_pll(cru, CLK_GENERAL, &gpll_init_cfg);
++	if (ret)
++		return ret;
+ 
+ 	/*
+ 	 * select apll as cpu/core clock pll source and
+@@ -234,6 +243,8 @@
+ 		     NANDC_PLL_SEL_MASK | NANDC_CLK_DIV_MASK,
+ 		     NANDC_PLL_SEL_GPLL << NANDC_PLL_SEL_SHIFT |
+ 		     3 << NANDC_CLK_DIV_SHIFT);
++
++	return 0;
+ }
+ 
+ /* Get pll rate by id */
+@@ -417,7 +428,7 @@
+ 
+ static ulong rk3128_vop_set_clk(struct rk3128_cru *cru, ulong clk_id, uint hz)
+ {
+-	int src_clk_div;
++	int src_clk_div, ret;
+ 	struct pll_div cpll_config = {0};
+ 
+ 	src_clk_div = GPLL_HZ / hz;
+@@ -439,7 +450,9 @@
+ 	case DCLK_VOP:
+ 		if (pll_para_config(hz, &cpll_config))
+ 			return -1;
+-		rkclk_set_pll(cru, CLK_CODEC, &cpll_config);
++		ret = rkclk_set_pll(cru, CLK_CODEC, &cpll_config);
++		if (ret)
++			return ret;
+ 
+ 		rk_clrsetreg(&cru->cru_clksel_con[27],
+ 			     DCLK_VOP_SEL_MASK | DCLK_VOP_DIV_CON_MASK,
+@@ -564,9 +577,7 @@
+ {
+ 	struct rk3128_clk_priv *priv = dev_get_priv(dev);
+ 
+-	rkclk_init(priv->cru);
+-
+-	return 0;
++	return rkclk_init(priv->cru);
+ }
+ 
+ static int rk3128_clk_bind(struct udevice *dev)

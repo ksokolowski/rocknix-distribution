@@ -1,0 +1,160 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Power policy: follow the power source. On battery the screen takes the
+# remembered battery level (40 % at first) and Wi-Fi saves power; plugged in,
+# the screen is at 100 % and Wi-Fi does not. A change of the backlight on
+# battery becomes the new battery level. "Power saving" off (a12.powersave=0)
+# leaves both alone. At 5 % while discharging for 30 s (the battery driver
+# samples every 5 s, so one dip is never enough) it shuts the device down
+# cleanly, so an empty battery cannot corrupt the card. The dark idle state
+# (bl_power) belongs to a12-controls and is never touched.
+# A pass that changes nothing starts no process: forks keep schedutil at
+# 1200 MHz (TEST_LOG test 77). Only built-ins read files, and system.cfg
+# only when it changed: bash reads it slowly. A marker keeps the file's own
+# time from the last read (touch -r, once per change).
+# A12_ROOT, A12_FUNCTIONS, A12_NOW, A12_IW and A12_POWEROFF are for tests.
+root=${A12_ROOT:-}
+. "${A12_FUNCTIONS:-/etc/profile.d/001-functions}"
+if [ -n "${root}" ]; then
+  J_CONF="${root}/storage/.config/system/configs/system.cfg"
+  J_CONF_LOCK="${root}/run/system.cfg.lock"
+fi
+bat="${root}/sys/class/power_supply/battery"
+bl="${root}/sys/class/backlight/backlight"
+state="${root}/run/a12-power.state"
+cfg_seen="${root}/run/a12-power.cfg-seen"
+
+source_seen="" raw="" low_since="" shutdown_sent=0 powersave="" battery_level=""
+[ -r "${state}" ] && . "${state}"
+
+save_state() {
+  printf 'source_seen=%s\nraw=%s\nlow_since=%s\nshutdown_sent=%s\npowersave=%s\nbattery_level=%s\n' \
+    "${source_seen}" "${raw}" "${low_since}" "${shutdown_sent}" "${powersave}" "${battery_level}" >"${state}"
+}
+
+# first line of a file into the variable named $1, empty if unreadable
+read_file() {
+  local -n out=$1
+  out=""
+  [ -r "$2" ] && read -r out <"$2"
+}
+
+# the settings this script uses, read without forking
+read_settings() {
+  local line
+  powersave=1 battery_level=""
+  [ -r "${J_CONF}" ] || return
+  while IFS= read -r line; do
+    case "${line}" in
+      a12.powersave=*) powersave=${line#*=} ;;
+      a12.brightness.battery=*) battery_level=${line#*=} ;;
+    esac
+  done <"${J_CONF}"
+}
+
+# set_setting without its first-boot copy of system.cfg, which always exists
+# by the time this runs: ROCKNIX's own del_setting and lock.
+store_setting() {
+  del_setting "$1"
+  wait_lock
+  echo "$1=$2" >>"${J_CONF}"
+  release_lock
+}
+
+set_percent() {
+  local max
+  read_file max "${bl}/max_brightness"
+  [[ "${max}" =~ ^[0-9]+$ ]] || return
+  raw=$(( ($1 * max * 2 + 100) / 200 ))
+  echo "${raw}" >"${bl}/brightness"
+  store_setting display.brightness "$1"
+}
+
+wifi_power_save() {
+  local dev
+  for dev in "${root}"/sys/class/net/wlan*; do
+    [ -e "${dev}" ] || continue
+    "${A12_IW:-iw}" dev "${dev##*/}" set power_save "$1" >/dev/null 2>&1
+  done
+}
+
+apply_source() {
+  if [ "${powersave}" = 0 ]; then
+    wifi_power_save off
+    read_file raw "${bl}/brightness"
+  elif [ "${source}" = battery ]; then
+    [[ "${battery_level}" =~ ^[0-9]+$ ]] || battery_level=40
+    set_percent "${battery_level}"
+    wifi_power_save on
+  else
+    set_percent 100
+    wifi_power_save off
+  fi
+}
+
+track_battery_level() {
+  local now max power
+  [ "${powersave}" != 0 ] && [ "${source}" = battery ] || return
+  read_file power "${bl}/bl_power"
+  [ "${power}" = 0 ] || return
+  read_file now "${bl}/brightness"
+  read_file max "${bl}/max_brightness"
+  [[ "${now}" =~ ^[0-9]+$ ]] && [[ "${max}" =~ ^[1-9][0-9]*$ ]] && [ "${now}" != "${raw}" ] || return
+  raw=${now}
+  local percent=$(( (now * 200 + max) / (max * 2) ))
+  store_setting a12.brightness.battery "${percent}"
+  battery_level=${percent}
+  store_setting display.brightness "${percent}"
+}
+
+check_low_battery() {
+  local capacity uptime
+  read_file capacity "${bat}/capacity"
+  if [ -n "${A12_NOW:-}" ]; then
+    uptime=${A12_NOW}
+  else
+    read -r uptime _ <"${root}/proc/uptime"
+    uptime=${uptime%.*}
+  fi
+  if [ "${status}" = Discharging ] && [[ "${capacity}" =~ ^[0-9]+$ ]] && [ "${capacity}" -le 5 ]; then
+    [ -n "${low_since}" ] || low_since=${uptime}
+  else
+    low_since=""
+  fi
+  if [ -n "${low_since}" ] && [ $(( uptime - low_since )) -ge 30 ] && [ "${shutdown_sent}" = 0 ]; then
+    shutdown_sent=1
+    save_state
+    ${A12_POWEROFF:-systemctl poweroff}
+  fi
+}
+
+pass() {
+  read_file status "${bat}/status"
+  if [ "${status}" = Discharging ]; then source=battery; else source=charger; fi
+  if [ -z "${powersave}" ] || [ ! -e "${cfg_seen}" ] || [ "${J_CONF}" -nt "${cfg_seen}" ]; then
+    read_settings
+    touch -r "${J_CONF}" "${cfg_seen}" 2>/dev/null || : >"${cfg_seen}"
+  fi
+  local seen="${source}-${powersave}"
+  if [ "${seen}" != "${source_seen}" ]; then
+    apply_source
+    source_seen=${seen}
+  fi
+  track_battery_level
+  check_low_battery
+  save_state
+}
+
+if [ "${1:-}" = --once ]; then
+  pass
+  exit 0
+fi
+# A FIFO lets read -t wait 2 s without starting a sleep process.
+fifo="${root}/run/a12-power.wait"
+rm -f "${fifo}"
+mkfifo "${fifo}"
+exec 3<>"${fifo}"
+while :; do
+  pass
+  read -r -t 2 -u 3 _
+done

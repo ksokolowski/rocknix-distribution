@@ -1,0 +1,19 @@
+Subject: [PATCH] phy: rockchip: skip state sampling without a linestate register
+
+The RK3128 host port has no utmi_ls register in the PHY configuration.
+Do not read GRF offset zero and mistake its value for a USB line state.
+Keep the port active, matching the guard in the working KNULLI driver
+(local reference 72498e26, phy-rockchip-inno-usb2.c).
+
+--- a/drivers/phy/rockchip/phy-rockchip-inno-usb2.c
++++ b/drivers/phy/rockchip/phy-rockchip-inno-usb2.c
+@@ -932,6 +932,9 @@
+ 	unsigned int ul_mask, uhd_mask;
+ 	int ret;
+ 
++	if (!rport->port_cfg->utmi_ls.offset)
++		return;
++
+ 	mutex_lock(&rport->mutex);
+ 
+ 	ret = regmap_read(rphy->grf, rport->port_cfg->utmi_ls.offset, &ul);

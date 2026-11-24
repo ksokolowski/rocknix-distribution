@@ -1,0 +1,29 @@
+Subject: [PATCH] clk: rockchip: rk3128: handle SD clock IDs used by dw_mmc
+
+The modern Rockchip MMC driver obtains clock index 1 from the upstream
+device tree: SCLK_SDMMC for the A12's SD controller. The RK3128 helper
+already supports this ID but set_rate only dispatches HCLK_EMMC to it.
+Allow SD clock rate requests and queries through the existing helper.
+
+--- a/drivers/clk/rockchip/clk_rk3128.c
++++ b/drivers/clk/rockchip/clk_rk3128.c
+@@ -487,6 +487,10 @@
+ 	switch (clk->id) {
+ 	case 0 ... 63:
+ 		return rkclk_pll_get_rate(priv->cru, clk->id);
++	case HCLK_SDMMC:
++	case SCLK_SDMMC:
++		return rockchip_mmc_get_clk(priv->cru,
++				rkclk_pll_get_rate(priv->cru, CLK_GENERAL), clk->id);
+ 	case PCLK_I2C0:
+ 	case PCLK_I2C1:
+ 	case PCLK_I2C2:
+@@ -520,6 +524,8 @@
+ 					      clk->id, rate);
+ 		break;
+ 	case HCLK_EMMC:
++	case HCLK_SDMMC:
++	case SCLK_SDMMC:
+ 		new_rate = rockchip_mmc_set_clk(priv->cru, gclk_rate,
+ 						clk->id, rate);
+ 		break;

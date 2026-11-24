@@ -1,0 +1,22 @@
+Subject: [PATCH] Settings: close audio during the screensaver on RK3128
+
+ES kept its SDL audio stream open while the A12 screen was dark, so the
+speaker amplifier, codec, I2S clock and PL330 DMA stayed on to play
+silence. StopMusicOnScreenSaver already closes audio when the screensaver
+starts and reopens it when it stops; make it the default on RK3128.
+
+--- a/es-core/src/Settings.cpp
++++ b/es-core/src/Settings.cpp
+@@ -267,7 +267,12 @@
+ 	mBoolMap["StretchVideoOnScreenSaver"] = false;
+ 	mStringMap["PowerSaverMode"] = "default"; 
+ 
++#if defined(RK3128)
++	// A12: closing audio turns the speaker amplifier, codec and DMA off while dark.
++	mBoolMap["StopMusicOnScreenSaver"] = true;
++#else
+ 	mBoolMap["StopMusicOnScreenSaver"] = false;
++#endif
+ 
+ 	mBoolMap["RetroachievementsMenuitem"] = true;
+ 	mIntMap["ScreenSaverSwapImageTimeout"] = 10000;

@@ -1,0 +1,28 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-or-later
+. /etc/profile
+while :; do
+  DEVICE=$(awk '
+    /^N: Name=.*A12 Audio Headphones/ { found=1 }
+    found && /^H: Handlers=/ { sub(/^H: Handlers=/, ""); for (i=1; i<=NF; i++) if ($i ~ /^event[0-9]+$/) { print "/dev/input/" $i; exit } }
+    /^$/ { found=0 }' /proc/bus/input/devices)
+  [ -n "$DEVICE" ] && break
+  sleep 1
+done
+route_audio() {
+  local route=speakers path=SPK
+  [ "$1" = 1 ] && route=headphone path=HP
+  amixer -c 0 cset name='Playback Path' "$path" >/dev/null
+  set_setting audio.device "$route"
+  /usr/bin/volume restore
+}
+# Start on the speaker, like KNULLI's udev hook: at boot the codec's detect
+# bit reads "inserted" with nothing plugged in, and the HP path left the
+# speaker silent (TEST_LOG test 55). Only insertion events switch the path.
+route_audio 0
+evtest "$DEVICE" | while IFS= read -r line; do
+  case "$line" in
+    *'(SW_HEADPHONE_INSERT), value 1'*) route_audio 1 ;;
+    *'(SW_HEADPHONE_INSERT), value 0'*) route_audio 0 ;;
+  esac
+done

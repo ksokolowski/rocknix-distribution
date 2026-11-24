@@ -1,0 +1,9 @@
+[Unit]
+Description=USB timing diagnosis
+RequiresMountsFor=/storage
+ConditionPathExists=/storage/.cache/a12-usb-test-once
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/a12-usb-test
+TimeoutStartSec=90

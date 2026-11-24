@@ -10,6 +10,7 @@ PKG_SITE="https://github.com/gabomdq/SDL_GameControllerDB"
 PKG_URL="${PKG_SITE}/archive/${PKG_VERSION}.tar.gz"
 PKG_LONGDESC="SDL Game Controller DB"
 PKG_TOOLCHAIN="manual"
+PKG_NEED_UNPACK="${PROJECT_DIR}/${PROJECT}/devices/${DEVICE}/packages/${PKG_NAME}"
 
 makeinstall_target() {
   mkdir -p ${INSTALL}/usr/config/SDL-GameControllerDB
@@ -17,4 +18,8 @@ makeinstall_target() {
       cat ${PKG_DIR}/config/gamecontrollerdb.txt >${INSTALL}/usr/config/SDL-GameControllerDB/gamecontrollerdb.txt
     fi
     cat ${PKG_BUILD}/gamecontrollerdb.txt >>${INSTALL}/usr/config/SDL-GameControllerDB/gamecontrollerdb.txt
+    local device_db="${PROJECT_DIR}/${PROJECT}/devices/${DEVICE}/packages/${PKG_NAME}/gamecontrollerdb.txt"
+    if [ -f "${device_db}" ]; then
+      cat "${device_db}" >>${INSTALL}/usr/config/SDL-GameControllerDB/gamecontrollerdb.txt
+    fi
 }

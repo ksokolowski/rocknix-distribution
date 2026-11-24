@@ -1,0 +1,13 @@
+[Unit]
+Description=Network watch
+RequiresMountsFor=/storage
+After=NetworkManager.service a12-diagnostics.service
+
+[Service]
+ExecStart=/usr/bin/a12-netwatch
+Nice=10
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,293 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-or-later
+"""Audit an A12 release before it is published (RELEASE_POLICY.md).
+
+  a12-release-audit --tar ROCKNIX-...tar --img ROCKNIX-...img.gz \\
+      --notes release-notes.md --testlog TEST_LOG.md --private PATTERNS \\
+      [--bios-dir DIR] [--export-repo PUBLIC --export-ref a12/port --source-rev next]
+
+Unpacks the update tar's SYSTEM, checks that the card image carries the
+same SYSTEM, and fails on: a game, ROM or BIOS-like file, or a large data
+file, that release-content.tsv does not list; a file whose checksum matches
+a known BIOS or a file in --bios-dir; a private identifier from --private
+(one literal per line, kept out of git) anywhere in the image, the notes or
+the export; a private key; a ScreenScraper developer login other than the
+shared JELOS one; an AI note in the release notes; a .sha256 that does not
+match; an update tar that no hardware test in TEST_LOG names; an export
+that differs from the source revision outside the private docs.
+--tree and --tar-checksum-only run parts of it (tests).
+"""
+import argparse
+import fnmatch
+import gzip
+import hashlib
+import json
+import os
+import pathlib
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+
+ROM_EXT = re.compile(r"(?i)\.(nes|fds|unf|sfc|smc|fig|gb|gbc|gba|nds|3ds|md|gen|smd|32x|sms|gg|sg|pce|sgx|"
+                     r"n64|z64|v64|iso|cue|gdi|cdi|bin|chd|pbp|cso|img|rom|adf|adz|dms|ipf|lha|hdf|wad|vb|"
+                     r"ngp|ngc|ws|wsc|a26|a52|a78|j64|lnx|d64|t64|tap|tzx|dsk|cdt|cpr|mx1|mx2|col|int|vec|"
+                     r"min|p8|tic|sna|z80|st|stx|msa|7z|zip|rar|sf2)$")
+BIOS_NAME = re.compile(r"(?i)(^|/)(scph\w*|kick\w*\.rom|kickstart\w*|mt32_\w+|cm32l_\w+|gba_bios\w*|"
+                       r"\w*bios\w*\.(bin|rom|zip)|syscard\w*|neogeo\.zip|disksys\.rom|lynxboot\.img|"
+                       r"5200\.rom|ataribas\.rom|atarixl\.rom|dc_boot\.bin|naomi\.zip|ps1_rom\.bin|psxonpsp\w*)$")
+KNOWN_BIOS_SHA1 = {
+    "b083518fffb7f66b03c23b7eb4f868e62dc5a987",  # Roland MT-32 control ROM v1.07
+    "f6b1eebc4b2d200ec6d3d21d51325d5b48c60252",  # Roland MT-32 PCM ROM
+}
+LARGE = 2 * 1024 * 1024
+DEVID = re.compile(rb"devid=([^&\x00\s\"']*)&devpassword=")
+# A key, not the header text that ssh, NetworkManager and GnuTLS carry to parse keys.
+PRIVATE_KEY = re.compile(rb"-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----\r?\n[A-Za-z0-9+/=]{40,}")
+TOKENS = re.compile(rb"\b(?:ghp_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,}|AKIA[0-9A-Z]{16})\b")
+AI_NOTE = re.compile(r"(?i)\b(AI|A\.I\.|artificial intelligence|LLM|ChatGPT|Claude|Copilot|Gemini|"
+                     r"generated with|written with|machine[- ]generated)\b")
+PRIVATE_DOCS = ("CLAUDE.md", "AGENTS.md", "projects/ROCKNIX/devices/RK3128/TEST_LOG.md",
+                "projects/ROCKNIX/devices/RK3128/BRINGUP.md", "projects/ROCKNIX/devices/RK3128/BACKLOG.md",
+                "projects/ROCKNIX/devices/RK3128/PERFORMANCE_REVIEW.md",
+                "projects/ROCKNIX/devices/RK3128/plans", "projects/ROCKNIX/devices/RK3128/upstream")
+
+findings = []
+
+
+def fail(msg):
+    findings.append(msg)
+    print("FAIL", msg)
+
+
+def sha256(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(1 << 20), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def is_text(data):
+    if b"\x00" in data[:4096]:
+        return False
+    try:
+        data[:4096].decode("utf-8")
+        return True
+    except UnicodeDecodeError:
+        return False
+
+
+def load_content(path):
+    """Content patterns, and key: patterns for files allowed to embed a known public key."""
+    rows, keys = [], []
+    for line in pathlib.Path(path).read_text().splitlines():
+        if line.strip() and not line.startswith("#"):
+            pattern, licence, source = (line.split("\t") + ["", ""])[:3]
+            if not licence or not source:
+                fail(f"content list line without licence or source: {line!r}")
+            if pattern.startswith("key:"):
+                keys.append(pattern[4:])
+            else:
+                rows.append(pattern)
+    return rows, keys
+
+
+def load_private(path):
+    words = [l.strip() for l in pathlib.Path(path).read_text().splitlines()
+             if l.strip() and not l.startswith("#")]
+    if not words:
+        fail(f"private pattern file {path} is empty")
+        return None
+    return re.compile(b"|".join(re.escape(w.encode()) for w in words), re.I)
+
+
+def check_checksum(path):
+    side = pathlib.Path(str(path) + ".sha256")
+    if not side.is_file():
+        fail(f"checksum: {side.name} missing")
+        return None
+    want = side.read_text().split()[0].lower()
+    have = sha256(path)
+    if want != have:
+        fail(f"checksum: {path.name} is {have[:12]}, {side.name} says {want[:12]}")
+    return have
+
+
+def check_tested(digest, testlog):
+    text = pathlib.Path(testlog).read_text()
+    if f"`{digest[:8]}" not in text:
+        fail(f"not tested: no hardware test in {pathlib.Path(testlog).name} names update tar `{digest[:8]}…`")
+
+
+def audit_tree(tree, content, private, bad_sha1, keys=()):
+    tree = pathlib.Path(tree)
+    count = 0
+    for dirpath, _, files in os.walk(tree):
+        for name in files:
+            p = pathlib.Path(dirpath) / name
+            if p.is_symlink() or not p.is_file():
+                continue
+            rel = p.relative_to(tree).as_posix()
+            listed = any(fnmatch.fnmatchcase(rel, pat) for pat in content)
+            data = p.read_bytes()
+            count += 1
+            elf = data[:4] == b"\x7fELF"
+            if not elf and not is_text(data):
+                if ROM_EXT.search(name) and not listed:
+                    fail(f"content: {rel} looks like a game, ROM or archive and is not in the content list")
+                if len(data) > LARGE and not listed:
+                    fail(f"content: {rel} is {len(data) >> 20} MB of data not in the content list")
+            if BIOS_NAME.search(rel) and not listed:
+                fail(f"content: {rel} is named like a BIOS or firmware dump and is not in the content list")
+            if not elf and len(data) <= 64 << 20 and hashlib.sha1(data).hexdigest() in bad_sha1:
+                fail(f"content: {rel} matches a known BIOS checksum")
+            if private is not None:
+                m = private.search(data)
+                if m:
+                    fail(f"private: {rel} contains a private identifier ({len(m.group(0))} characters)")
+            if PRIVATE_KEY.search(data) and not any(fnmatch.fnmatchcase(rel, k) for k in keys):
+                fail(f"secret: {rel} contains a private key")
+            if TOKENS.search(data):
+                fail(f"secret: {rel} contains an access token")
+            for m in DEVID.finditer(data):
+                if m.group(1) not in (b"jelos", b"xxx", b""):
+                    fail(f"secret: {rel} carries a developer login other than the shared JELOS one")
+                    break
+    print(f"image: {count} files checked")
+
+
+def unpack_system(tar, work):
+    out = subprocess.run(["tar", "-tf", str(tar)], capture_output=True, text=True, check=True).stdout.split()
+    member = next((m for m in out if m.endswith("/target/SYSTEM")), None)
+    if not member:
+        fail("tar: no target/SYSTEM")
+        return None, None
+    subprocess.run(["tar", "-xf", str(tar), "-C", str(work), member], check=True)
+    system = work / member
+    subprocess.run(["unsquashfs", "-q", "-d", str(work / "sys"), str(system)], check=True,
+                   stdout=subprocess.DEVNULL)
+    # Unpacked as a user, files keep modes like 0600 root:root shadow: make the copy readable.
+    subprocess.run(["chmod", "-R", "u+rwX", str(work / "sys")], check=True)
+    return work / "sys", sha256(system)
+
+
+def img_system_sha(img, work):
+    raw = work / "card.img"
+    with gzip.open(img, "rb") as src, open(raw, "wb") as dst:
+        shutil.copyfileobj(src, dst, 1 << 20)
+    table = json.loads(subprocess.run(["sfdisk", "-J", str(raw)], capture_output=True, text=True,
+                                      check=True).stdout)["partitiontable"]
+    sector = table.get("sectorsize", 512)
+    for part in table["partitions"]:
+        offset = part["start"] * sector
+        got = subprocess.run(["mcopy", "-n", "-i", f"{raw}@@{offset}", "::/SYSTEM", str(work / "img-SYSTEM")],
+                             capture_output=True)
+        if got.returncode == 0:
+            digest = sha256(work / "img-SYSTEM")
+            raw.unlink()
+            return digest
+    raw.unlink()
+    fail("image: no partition with a SYSTEM file in the card image")
+    return None
+
+
+def check_notes(notes, private):
+    text = pathlib.Path(notes).read_text()
+    m = AI_NOTE.search(text)
+    if m:
+        fail(f"notes: mention {m.group(0)!r} (no AI notes in release texts)")
+    if private is not None and private.search(text.encode()):
+        fail("notes: contain a private identifier")
+    if private is None:
+        return
+
+
+def check_export(repo, ref, source_rev, private, here, upstream_rev):
+    here = pathlib.Path(here)
+    subprocess.run(["git", "-C", str(here), "fetch", "-q", str(repo), ref], check=True)
+    base = subprocess.run(["git", "-C", str(here), "merge-base", source_rev, upstream_rev],
+                          capture_output=True, text=True, check=True).stdout.strip()
+
+    def blob(repo_dir, rev, path):
+        r = subprocess.run(["git", "-C", str(repo_dir), "rev-parse", f"{rev}:{path}"], capture_output=True, text=True)
+        return r.stdout.strip() if r.returncode == 0 else None
+    excludes = [f":(exclude){d}" for d in PRIVATE_DOCS]
+    diff = subprocess.run(["git", "-C", str(here), "diff", "--stat", source_rev, "FETCH_HEAD", "--", ".", *excludes],
+                          capture_output=True, text=True, check=True).stdout.strip()
+    if diff:
+        fail(f"export: {ref} differs from {source_rev} outside the private docs:\n{diff}")
+    names = subprocess.run(["git", "-C", str(repo), "ls-tree", "-r", "--name-only", ref],
+                           capture_output=True, text=True, check=True).stdout.splitlines()
+    for n in names:
+        if any(n == d or n.startswith(d + "/") for d in PRIVATE_DOCS):
+            # Upstream ROCKNIX's own file of that name (its AGENTS.md) is fine, unchanged.
+            if blob(repo, ref, n) != blob(here, base, n):
+                fail(f"export: private doc {n} in {ref} is not upstream's version")
+    if private is not None:
+        words = [w for w in pathlib.Path(args.private).read_text().splitlines() if w.strip() and not w.startswith("#")]
+        for w in words:
+            r = subprocess.run(["git", "-C", str(repo), "grep", "-I", "-i", "-l", "-F", w, ref],
+                               capture_output=True, text=True)
+            if r.stdout.strip():
+                fail(f"export: a private identifier appears in {len(r.stdout.splitlines())} file(s) of {ref}")
+    print(f"export: {ref} checked against {source_rev}")
+
+
+ap = argparse.ArgumentParser()
+ap.add_argument("--tar")
+ap.add_argument("--img")
+ap.add_argument("--tree")
+ap.add_argument("--tar-checksum-only")
+ap.add_argument("--notes")
+ap.add_argument("--testlog")
+ap.add_argument("--private", required=True)
+ap.add_argument("--content", default=str(pathlib.Path(__file__).resolve().parents[1] / "release-content.tsv"))
+ap.add_argument("--bios-dir", action="append", default=[])
+ap.add_argument("--extra-bad-sha1", action="append", default=[])
+ap.add_argument("--export-repo")
+ap.add_argument("--export-ref", default="a12/port")
+ap.add_argument("--source-rev", default="next")
+ap.add_argument("--source-repo", default=str(pathlib.Path(__file__).resolve().parents[5]))
+ap.add_argument("--upstream-rev", default="upstream/next")
+args = ap.parse_args()
+
+content, keys = load_content(args.content)
+private = load_private(args.private)
+bad = set(KNOWN_BIOS_SHA1) | {h.lower() for h in args.extra_bad_sha1}
+for d in args.bios_dir:
+    for p in pathlib.Path(d).rglob("*"):
+        if p.is_file() and p.stat().st_size <= 64 << 20:
+            bad.add(hashlib.sha1(p.read_bytes()).hexdigest())
+
+with tempfile.TemporaryDirectory(dir=os.environ.get("TMPDIR")) as tmp:
+    work = pathlib.Path(tmp)
+    if args.tar_checksum_only:
+        digest = check_checksum(pathlib.Path(args.tar_checksum_only))
+        if digest and args.testlog:
+            check_tested(digest, args.testlog)
+    if args.tar:
+        tar = pathlib.Path(args.tar)
+        digest = check_checksum(tar)
+        if digest and args.testlog:
+            check_tested(digest, args.testlog)
+        elif not args.testlog:
+            fail("not tested: --testlog is required with --tar")
+        tree, system_sha = unpack_system(tar, work)
+        if args.img:
+            img = pathlib.Path(args.img)
+            check_checksum(img)
+            if system_sha and img_system_sha(img, work) != system_sha:
+                fail("image: the card image's SYSTEM differs from the update tar's")
+        if tree:
+            audit_tree(tree, content, private, bad, keys)
+    if args.tree:
+        audit_tree(args.tree, content, private, bad, keys)
+    if args.notes:
+        check_notes(args.notes, private)
+    if args.export_repo:
+        check_export(args.export_repo, args.export_ref, args.source_rev, private, args.source_repo, args.upstream_rev)
+
+print(f"{len(findings)} finding(s)" if findings else "release audit: clean")
+sys.exit(1 if findings else 0)

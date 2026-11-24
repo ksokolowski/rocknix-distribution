@@ -1,0 +1,15 @@
+Subject: [PATCH] drm/rockchip: expose the RK3126 VOP RGB encoder
+
+The A12 uses the RGB output supported by rk3126_output. Follow the
+existing PX30 INTERNAL_RGB path for panel binding.
+
+--- a/drivers/gpu/drm/rockchip/rockchip_vop_reg.c
++++ b/drivers/gpu/drm/rockchip/rockchip_vop_reg.c
+@@ -239,6 +239,7 @@
+ };
+ 
+ static const struct vop_data rk3126_vop = {
++	.feature = VOP_FEATURE_INTERNAL_RGB,
+ 	.intr = &rk3036_intr,
+ 	.common = &rk3036_common,
+ 	.modeset = &rk3036_modeset,

@@ -1,0 +1,33 @@
+# Content an A12 release may ship: path pattern (relative to the system
+# image; * also matches /), licence, source. a12-release-audit requires every
+# game, ROM, BIOS-like or large data file to match a line here.
+# pattern	licence	source
+usr/share/a12-free-games/doom/doom1.wad	freely distributable shareware (id Software)	Debian doom-wad-shareware
+usr/share/a12-free-games/doom/freedoom*.wad	BSD-3-Clause	Freedoom 0.13.0 release
+usr/share/a12-free-games/gb/Tobu Tobu Girl*.gb	MIT code, CC BY 4.0 assets	Tangram Games releases
+usr/share/a12-free-games/megadrive/Old Towers.bin	free homebrew, credits shipped	RetroSouls (as Batocera ships it)
+usr/share/a12-free-games/gba/Space Twins.gba	free homebrew, credits shipped	9wires (as Batocera ships it)
+usr/share/a12-free-games/pcengine/*.pce	free homebrew, credits shipped	Aetherbyte (as Batocera ships it)
+usr/share/bluemsx/Machines/*C-BIOS*/*.rom	BSD-2-Clause	C-BIOS (free MSX BIOS), blueMSX package
+usr/lib/kernel-overlays/base/lib/firmware/*	redistributable per linux-firmware WHENCE	linux-firmware and ROCKNIX firmware packages
+usr/lib/kernel-overlays/base/lib/modules/*	GPL-2.0	Linux kernel module indexes
+usr/share/bootloader/*.img	Rockchip binary licence (loader, TEE); GPL-2.0+ (U-Boot)	rkbin pinned by rk3128-blobs; mainline U-Boot
+usr/share/alsa/ucm2/blobs/*	BSD-3-Clause	SOF topology blobs in alsa-ucm-conf
+usr/share/retroarch-assets/*	CC BY 4.0 and font licences per file	retroarch-assets
+usr/share/scummvm/*.dat	GPL-3.0-or-later	ScummVM data files
+usr/share/scummvm/*.zip	GPL-3.0-or-later	ScummVM themes and help
+usr/share/scummvm/Roland_SC-55.sf2	GPL-3.0-or-later (2015 deemster, fan-made)	ScummVM dists/soundfonts
+usr/config/scummvm/themes/*	GPL-3.0-or-later	ScummVM themes
+usr/share/soundfonts/GeneralUser.sf2	GeneralUser GS licence (free for any use)	S. Christian Collins, soundfont-generaluser package
+usr/config/PortMaster/release/PortMaster.zip	MIT	PortMaster release
+usr/share/fonts/*	OFL-1.1	Noto and other font packages
+usr/config/emulationstation/resources/*	OFL-1.1 fonts; GPL ES data	EmulationStation resources
+usr/share/misc/magic.mgc	BSD-2-Clause	file
+usr/share/i18n/*	LGPL-2.1-or-later	glibc locales
+usr/config/locale/*	LGPL-2.1-or-later	glibc compiled locale
+usr/lib/udev/hwdb.d/*	LGPL-2.1-or-later	systemd hardware database
+usr/share/libretro-database/*	CC BY-SA 4.0 and per-file	libretro-database (cheats and metadata, no games)
+usr/share/glsl-shaders/*	GPL and per-shader licences	libretro glsl-shaders
+usr/share/common-shaders/*	GPL and per-shader licences	libretro common-shaders
+usr/share/glmark2/*	GPL-3.0	glmark2 benchmark data
+key:usr/lib/libgnutls.so*	public self-test keys, no secret	GnuTLS lib/crypto-selftests-pk.c

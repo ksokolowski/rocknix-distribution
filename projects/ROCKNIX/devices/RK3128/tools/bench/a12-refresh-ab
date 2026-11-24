@@ -1,0 +1,143 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Run on A12. Panel refresh A/B (60.015 Hz 60-hblank vs native 85.02 Hz):
+# one arm per boot, switched with a reboot.
+#   a12-refresh-ab set 60|85    select the arm for the next boot (extlinux
+#       panel_a12.refresh_60hz and RetroArch video_refresh_rate), no reboot
+#   a12-refresh-ab run OUT [ROUNDS]   measure the running boot, frontend stopped
+# Silent: RetroArch audio off, Olduvai SDL dummy audio, Master at 0 % meanwhile.
+# Paced runs pace as in play: at 60 Hz RetroArch follows vsync (audio skew
+# adjustment absorbs 59.63 vs 60.015); at 85 Hz audio sync would pace the core,
+# which "sync to exact content framerate" reproduces without audio.
+# a12-present-probe records which vblanks show a new frame.
+set -eu
+bench=/storage/bench
+probe=$bench/a12-present-probe
+cfg=/storage/.config/retroarch/retroarch.cfg
+extlinux=/flash/extlinux/extlinux.conf
+param=panel_a12.refresh_60hz=1
+
+die() { echo "$*" >&2; exit 1; }
+
+set_arm() {
+    case $1 in
+        60) rate=60.015000 ;;
+        85) rate=85.019409 ;;
+        *) die 'arm is 60 or 85' ;;
+    esac
+    mount -o remount,rw /flash
+    sed -i "s/ $param//" "$extlinux"
+    [ "$1" = 85 ] || sed -i "/^ *APPEND / s/\$/ $param/" "$extlinux"
+    sync
+    mount -o remount,ro /flash
+    sed -i "s/^video_refresh_rate = .*/video_refresh_rate = \"$rate\"/" "$cfg"
+    grep APPEND "$extlinux"
+    grep '^video_refresh_rate' "$cfg"
+}
+
+run() {
+    out=$1; rounds=${2:-2}
+    [ "$(id -u)" = 0 ] || die 'Run as root.'
+    . /etc/profile >/dev/null 2>&1 || true
+    [ ! -e "$out" ] || die "$out exists"
+    pidof retroarch >/dev/null && die 'A game is running.'
+    case $(cat /sys/module/panel_a12/parameters/refresh_60hz) in
+        Y) arm=60; vrr=false ;;
+        *) arm=85; vrr=true ;;
+    esac
+    mkdir -p "$out/saves" "$out/states" "$out/olduvai-config"
+    {
+        cat /proc/sys/kernel/random/boot_id /proc/cmdline
+        echo "arm=$arm"
+        grep -E '^(video_refresh_rate|video_vsync|video_threaded|video_max_swapchain_images|audio_sync) ' "$cfg"
+        cat /sys/class/devfreq/dmc/cur_freq
+        grep -A3 'crtc\[' /sys/kernel/debug/dri/0/state | head -8
+    } > "$out/boot.txt"
+    sha256sum /usr/bin/retroarch /usr/lib/libretro/fbneo_libretro.so "$bench/ffight.zip" \
+        "$bench/olduvai/olduvai-348e56a.armhf" "$bench/olduvai/deep_run_l1_in.jsonl" \
+        "$bench/olduvai/fonts/FreckleFace-Regular.ttf" "$probe" > "$out/inputs.sha256"
+    cpu=/sys/devices/system/cpu/cpufreq/policy0/scaling_governor
+    gpu=/sys/class/devfreq/10090000.gpu/governor
+    old_cpu=$(cat "$cpu"); old_gpu=$(cat "$gpu")
+    volume=$(amixer -c 0 sget Master | sed -n 's/.*\[\([0-9]*%\)\].*/\1/p' | head -1)
+    cleanup() {
+        echo "$old_cpu" > "$cpu"; echo "$old_gpu" > "$gpu"
+        amixer -q -c 0 sset Master "$volume"
+        systemctl start emustation.service
+    }
+    trap cleanup EXIT
+    trap 'exit 130' INT TERM HUP
+    amixer -q -c 0 sset Master 0%
+    systemctl stop emustation.service
+    sleep 4
+    echo performance > "$cpu"; echo performance > "$gpu"
+    cat > "$out/core-options.cfg" <<OPTIONS
+fbneo-cyclone = "enabled"
+fbneo-samplerate = "48000"
+OPTIONS
+    cat > "$out/override.cfg" <<CONFIG
+config_save_on_exit = "false"
+core_options_path = "$out/core-options.cfg"
+global_core_options = "true"
+game_specific_options = "false"
+auto_overrides_enable = "false"
+auto_remaps_enable = "false"
+auto_shaders_enable = "false"
+content_history_enable = "false"
+content_runtime_log = "false"
+video_vsync = "true"
+vrr_runloop_enable = "$vrr"
+fps_show = "false"
+rewind_enable = "false"
+run_ahead_enabled = "false"
+savestate_auto_load = "false"
+savestate_auto_save = "false"
+savefile_directory = "$out/saves"
+savestate_directory = "$out/states"
+audio_enable = "false"
+audio_sync = "false"
+audio_driver = "null"
+CONFIG
+    # step NAME DELAY PROBE_SECONDS COMMAND...: the probe watches the middle
+    # of the run; CPU time is the command's user+system time.
+    step() {
+        name=$1 delay=$2 secs=$3; shift 3
+        echo "START $name"
+        ( sleep "$delay"; "$probe" "$secs" "$out/$name.intervals" > "$out/$name.probe" 2>&1 ) &
+        prober=$!
+        start=$(cut -d' ' -f1 /proc/uptime)
+        TIMEFORMAT='cpu_user=%U cpu_sys=%S wall=%R'
+        { time "$@" </dev/null > "$out/$name.log" 2>&1 || echo "exit $?" >> "$out/$name.log"; } 2> "$out/$name.time"
+        wait "$prober" || true
+        echo "start_uptime=$start" >> "$out/$name.time"
+        cat "$out/$name.probe" "$out/$name.time"
+        sleep 3
+    }
+    olduvai() {
+        profile=$1; shift
+        ( cd /storage/roms/ports/olduvai && env XDG_RUNTIME_DIR=/var/run SDL_AUDIODRIVER=dummy \
+            SDL_VIDEODRIVER=kmsdrm XDG_CONFIG_HOME="$out/olduvai-config" OLDUVAI_BUG_DIR="$out/bugs" \
+            OLDUVAI_FRAME_STATS=1 "$@" timeout 240 "$bench/olduvai/olduvai-348e56a.armhf" \
+            --game-dir ./game --rom-dir ./mt32-roms --no-config --default-profile "$profile" \
+            --music-device off --play --level 1 --replay "$bench/olduvai/deep_run_l1_in.jsonl" \
+            --play-frames 600 --transitions classic )
+    }
+    export XDG_RUNTIME_DIR=/var/run/0-runtime-dir SDL_VIDEODRIVER=kmsdrm
+    for r in $(seq "$rounds"); do
+        step "$r-ffight-paced" 10 20 timeout 240 retroarch -v -L /usr/lib/libretro/fbneo_libretro.so \
+            --config "$cfg" --appendconfig "$out/override.cfg" \
+            --max-frames=2100 --sram-mode=noload-nosave "$bench/ffight.zip"
+        for profile in dos-handheld hd-handheld; do
+            step "$r-olduvai-$profile-paced" 8 20 olduvai "$profile"
+            step "$r-olduvai-$profile-timedemo" 4 8 olduvai "$profile" OLDUVAI_UNTHROTTLED=1
+        done
+    done
+    touch "$out/complete"
+    echo 'ALL COMPLETE'
+}
+
+case ${1:-} in
+    set) set_arm "$2" ;;
+    run) shift; run "$@" ;;
+    *) die 'Usage: a12-refresh-ab set 60|85 | run OUT [ROUNDS]' ;;
+esac

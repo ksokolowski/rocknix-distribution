@@ -16,6 +16,11 @@ if [ "${ISCSI_SUPPORT}" = yes ]; then
   PKG_DEPENDS_INIT+=" open-iscsi:init"
 fi
 
+# Powkiddy A12: KMS status screen (update progress without fbdev).
+if [ "${DEVICE}" = "RK3128" ]; then
+  PKG_DEPENDS_INIT+=" a12-controls:init"
+fi
+
 if [ "${INITRAMFS_PARTED_SUPPORT}" = yes ]; then
   PKG_DEPENDS_INIT+=" parted:init"
 fi

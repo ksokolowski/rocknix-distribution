@@ -1,0 +1,16 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+# The GIC delivers each device interrupt to the first CPU of its mask, so
+# by default all of them run on CPU0. Spread the busy ones (test 57): the
+# USB host (network and Wi-Fi dongles) to CPU1, the SD controller and the
+# PL330 DMA (SD and audio) to CPU2. Timers stay per CPU.
+root=${A12_ROOT:-}
+awk -F: '/^ *[0-9]+:/ { irq = $1 + 0; name = $0; sub(/.*(Level|Edge) +/, "", name); print irq, name }' \
+  "$root/proc/interrupts" | while read -r irq name; do
+  case "$name" in
+    *ehci_hcd*|*ohci_hcd*|*dwc2*) cpu=1 ;;
+    dw-mci*|*dma-controller*) cpu=2 ;;
+    *) continue ;;
+  esac
+  echo "$cpu" > "$root/proc/irq/$irq/smp_affinity_list" && echo "$irq $name -> $cpu"
+done

@@ -1,0 +1,38 @@
+// SPDX-License-Identifier: GPL-2.0+
+/dts-v1/;
+#include "rk3128.dtsi"
+
+/ {
+	model = "Powkiddy A12 revision A";
+	compatible = "powkiddy,a12-rev-a", "rockchip,rk3128";
+
+	aliases {
+		mmc0 = &sdmmc;
+	};
+
+	chosen {
+		stdout-path = "serial0:115200n8";
+	};
+
+	memory@60000000 {
+		device_type = "memory";
+		reg = <0x60000000 0x10000000>;
+	};
+};
+
+&sdmmc {
+	bus-width = <4>;
+	cap-sd-highspeed;
+	disable-wp;
+	max-frequency = <37500000>;
+	non-removable;
+	pinctrl-names = "default";
+	pinctrl-0 = <&sdmmc_clk &sdmmc_cmd &sdmmc_bus4>;
+	status = "okay";
+};
+
+&uart0 {
+	/* GPIO2_D5 is the board's power enable, not UART0 CTS. */
+	pinctrl-0 = <&uart0_xfer>;
+	status = "okay";
+};

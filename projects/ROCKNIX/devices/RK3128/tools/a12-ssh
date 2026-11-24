@@ -1,0 +1,9 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-or-later
+# SSH to the A12 test device with a pinned host key (alias "a12", valid for any
+# DHCP address or Wi-Fi dongle) and fast dead-link detection.
+set -euo pipefail
+exec ssh -o UserKnownHostsFile="${A12_KNOWN_HOSTS:-$HOME/.ssh/a12_known_hosts}" \
+  -o HostKeyAlias=a12 -o StrictHostKeyChecking=yes -o ConnectTimeout=20 \
+  -o ServerAliveInterval=5 -o ServerAliveCountMax=3 \
+  "root@${A12_HOST:?set A12_HOST to the device address}" "$@"

@@ -1,0 +1,22 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Run on A12 under setsid: wait for a Wi-Fi drop, then try escalating
+# recoveries and log which one restores the link. Log: /storage/a12-coretest/wifi-NAME.log
+log=/storage/a12-coretest/wifi-$1.log; exec > $log 2>&1
+wl() { for d in /sys/class/net/*/wireless; do [ -e "$d" ] && basename "${d%/wireless}" && return; done; }
+up() { w=$(wl); [ -n "$w" ] && iw dev "$w" link 2>/dev/null | grep -q '^Connected'; }
+t() { cut -d' ' -f1 /proc/uptime; }
+until up; do sleep 2; done
+ssid=$(iw dev "$(wl)" link | sed -n 's/^\s*SSID: //p')
+echo "$(t) iface $(wl) boot $(cat /proc/sys/kernel/random/boot_id) ssid=$ssid"
+while up; do sleep 2; done
+echo "$(t) DROP"; dmesg | tail -5
+wait_up() { for i in $(seq 1 $1); do up && { echo "$(t) UP after $2"; iw dev "$(wl)" link | grep -E "signal|bitrate"; exit 0; }; sleep 1; done; echo "$(t) still down after $2"; }
+wait_up 70 "iwd autoconnect"
+echo "$(t) step1 iwctl connect"; timeout 20 iwctl station "$(wl)" connect "$ssid" 2>&1; wait_up 30 "iwctl connect"
+echo "$(t) step2 link down/up"; w=$(wl); ip link set $w down; sleep 1; ip link set $w up; wait_up 45 "link down/up"
+dev=$(basename "$(readlink -f /sys/class/net/$(wl)/device)")
+[ -n "$dev" ] && [ "$dev" != device ] || { echo "$(t) no device"; exit 1; }
+echo "$(t) step3 rebind $dev"; echo "$dev" > /sys/bus/usb/drivers/rtl8xxxu/unbind; sleep 2; echo "$dev" > /sys/bus/usb/drivers/rtl8xxxu/bind; wait_up 90 "driver rebind"
+echo "$(t) step4 usb reauthorize"; u=${dev%%:*}; echo 0 > /sys/bus/usb/devices/$u/authorized; sleep 2; echo 1 > /sys/bus/usb/devices/$u/authorized; wait_up 90 "usb reauthorize"
+echo "$(t) GAVE UP"; dmesg | tail -20

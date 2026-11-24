@@ -1,0 +1,45 @@
+#!/bin/sh
+# systemd-shutdown runs this after all services stopped; /storage may be gone.
+# Kernel patch 0012 leaves the display lit at power-off, because the A12's
+# latching switch is what removes power. On a nearly empty battery or after
+# a critical temperature, nobody needs the "safe to turn off" screen and the
+# backlight would keep draining the cell: blank it instead.
+sys=${A12_SYSFS:-/sys}
+splash=${A12_SPLASH:-/usr/bin/a12-splash}
+
+low_battery() {
+  capacity=$(cat "$sys/class/power_supply/battery/capacity" 2>/dev/null) || return 1
+  [ "$(cat "$sys/class/power_supply/usb/online" 2>/dev/null)" = 1 ] && return 1
+  [ "$capacity" -le 5 ] 2>/dev/null
+}
+
+too_hot() {
+  for zone in "$sys"/class/thermal/thermal_zone*; do
+    temp=$(cat "$zone/temp" 2>/dev/null) || continue
+    for type in "$zone"/trip_point_*_type; do
+      [ "$(cat "$type" 2>/dev/null)" = critical ] || continue
+      trip=$(cat "${type%_type}_temp" 2>/dev/null) || continue
+      [ "$temp" -ge "$trip" ] 2>/dev/null && return 0
+    done
+  done
+  return 1
+}
+
+blank() {
+  for backlight in "$sys"/class/backlight/*; do
+    [ -e "$backlight/brightness" ] || continue
+    echo 0 >"$backlight/brightness" 2>/dev/null
+    echo 4 >"$backlight/bl_power" 2>/dev/null
+  done
+  echo 4 >"$sys/class/graphics/fb0/blank" 2>/dev/null
+  # KMS (a12_kms_splash): the plane keeps scanning the last frame; disable it.
+  "$splash" --blank 2>/dev/null
+  return 0
+}
+
+[ "$1" = poweroff ] || exit 0
+if low_battery || too_hot; then
+  blank
+  exit 0
+fi
+exec "$splash" --final

@@ -1,0 +1,117 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Run on A12. Which libretro cores keep up: each core x game runs in
+# core-benchmark (no frontend, no audio, no display) for 60 s of game time
+# as warm-up (title, attract or demo), then three 600-frame stages. Speed is
+# emulated FPS against the system's own rate. Frontend stopped, performance
+# governors. Games are the owner's, in the normal ROM folders, and stay on the device.
+#   a12-core-survey OUT [FILTER]   FILTER: only lines whose core or path match
+set -eu
+base=/storage/a12-coretest
+roms=/storage/roms
+
+out=$1; filter=${2:-}
+[ ! -e "$out" ] || { echo "$out exists" >&2; exit 1; }
+mkdir -p "$out"
+cores=/usr/lib/libretro
+list() {
+cat <<'LIST'
+fceumm nes/Super Mario Bros. 3 (USA) (Rev A).nes
+quicknes nes/Super Mario Bros. 3 (USA) (Rev A).nes
+snes9x2002 snes/Super Mario World (USA).sfc
+snes9x2005_plus snes/Super Mario World (USA).sfc
+snes9x2010 snes/Super Mario World (USA).sfc
+snes9x2002 snes/Donkey Kong Country (USA) (Rev 2).sfc
+snes9x2005_plus snes/Donkey Kong Country (USA) (Rev 2).sfc
+snes9x2010 snes/Donkey Kong Country (USA) (Rev 2).sfc
+snes9x2002 snes/Mega Man X3 (USA).sfc
+snes9x2005_plus snes/Mega Man X3 (USA).sfc
+snes9x2010 snes/Mega Man X3 (USA).sfc
+snes9x2002 snes/Star Fox (USA) (Rev 2).sfc
+snes9x2005_plus snes/Star Fox (USA) (Rev 2).sfc
+snes9x2010 snes/Star Fox (USA) (Rev 2).sfc
+snes9x2002 snes/Super Mario World 2 - Yoshi's Island (USA) (Rev 1).sfc
+snes9x2005_plus snes/Super Mario World 2 - Yoshi's Island (USA) (Rev 1).sfc
+snes9x2010 snes/Super Mario World 2 - Yoshi's Island (USA) (Rev 1).sfc
+gambatte gb/Tetris (World) (Rev A).gb
+gearboy gb/Tetris (World) (Rev A).gb
+gambatte gbc/Legend of Zelda, The - Link's Awakening DX (USA, Europe) (Rev A) (SGB Enhanced).gbc
+gearboy gbc/Legend of Zelda, The - Link's Awakening DX (USA, Europe) (Rev A) (SGB Enhanced).gbc
+gpsp gba/Pokemon - Emerald Version (USA, Europe).gba
+mgba gba/Pokemon - Emerald Version (USA, Europe).gba
+gpsp gba/Golden Sun (USA, Europe).gba
+mgba gba/Golden Sun (USA, Europe).gba
+gpsp gba/Mario Kart - Super Circuit (USA).gba
+mgba gba/Mario Kart - Super Circuit (USA).gba
+picodrive megadrive/Sonic & Knuckles and Sonic II.bin
+genesis_plus_gx megadrive/Sonic & Knuckles and Sonic II.bin
+picodrive megadrive/Virtua Racing (Europe).md
+genesis_plus_gx megadrive/Virtua Racing (Europe).md
+gearsystem gamegear/Sonic Blast (World).gg
+genesis_plus_gx gamegear/Sonic Blast (World).gg
+picodrive gamegear/Sonic Blast (World).gg
+beetle_pce_fast pcengine/008.Bonk III - Bonk's Big Adventure (U).pce
+fbneo cps2/sfa3.zip
+fbneo cps2/mvsc.zip
+fbneo cps3/sfiii3.zip
+fbneo neogeo/mslug.zip
+fbneo neogeo/mslug2.zip
+fbneo neogeo/mslug3.zip
+fbneo neogeo/garou.zip
+mame2003_plus mame/galaga.zip
+mame2003_plus mame/mk2.zip
+fbneo mame/mk2.zip
+mame2003_plus mame/outrun.zip
+mame2003_plus mame/blktiger.zip
+fbneo mame/blktiger.zip
+mame2003_plus mame/trojan.zip
+fbneo mame/trojan.zip
+mame2003_plus mame/puckman.zip
+fbneo mame/puckman.zip
+mame2003_plus mame/mspacman.zip
+fbneo mame/mspacman.zip
+mame2003_plus mame/galaxian.zip
+fbneo mame/galaxian.zip
+mame2003_plus mame/dkong.zip
+fbneo mame/dkong.zip
+pcsx_rearmed psx/Tekken 3.PBP
+pcsx_rearmed psx/Crash Bandicoot 2 - Cortex Strikes Back.PBP
+pcsx_rearmed psx/Final Fantasy Tactics.PBP
+LIST
+}
+cpu=/sys/devices/system/cpu/cpufreq/policy0/scaling_governor
+gpu=/sys/class/devfreq/10090000.gpu/governor
+old_cpu=$(cat "$cpu"); old_gpu=$(cat "$gpu")
+frontend=$(systemctl is-active emustation.service || true)
+# Backlight off while the survey runs (owner, 2026-10-11); restored on exit.
+backlight=$(ls -d /sys/class/backlight/* 2>/dev/null | head -n 1)
+old_brightness=$(cat "$backlight/brightness" 2>/dev/null || true)
+cleanup() {
+    echo "$old_cpu" > "$cpu"; echo "$old_gpu" > "$gpu"
+    [ -z "$old_brightness" ] || echo "$old_brightness" > "$backlight/brightness"
+    [ "$frontend" != active ] || systemctl start emustation.service
+}
+trap cleanup EXIT
+trap 'exit 130' INT TERM HUP
+systemctl stop emustation.service
+sleep 3
+echo performance > "$cpu"; echo performance > "$gpu"
+[ -z "$old_brightness" ] || echo 0 > "$backlight/brightness"
+{ cat /proc/sys/kernel/random/boot_id; cat /sys/class/devfreq/dmc/cur_freq; } > "$out/boot.txt"
+n=0
+list | while read -r core game; do
+    case "$core $game" in *"$filter"*) ;; *) continue ;; esac
+    n=$((n + 1))
+    log=$out/$(printf '%02d' "$n")-$core-$(basename "${game%.*}" | tr -c 'A-Za-z0-9\n' '_').log
+    echo "$core $game" > "$log"
+    start=$(cut -d' ' -f1 /proc/uptime)
+    # Cores find BIOS and companion files (neogeo.zip) next to the content.
+    ( cd "$roms/$(dirname "$game")" && A12_BENCH_WARMUP=3600 A12_BENCH_STAGES=3 \
+        timeout 300 "$base/core-benchmark" "$cores/${core}_libretro.so" "$roms/$game" ) >> "$log" 2>&1 \
+        || echo "exit $?" >> "$log"
+    end=$(cut -d' ' -f1 /proc/uptime)
+    echo "wall $start $end" >> "$log"
+    fps=$(sed -n 's/.* = \([0-9.]*\) FPS; target \([0-9.]*\) FPS/\1/p' "$log" | tr '\n' ' ')
+    printf '%-16s %-60s %s\n' "$core" "$game" "${fps:-FAILED $(tail -n 3 "$log" | tr '\n' ' ')}"
+done | tee "$out/summary.txt"
+touch "$out/complete"

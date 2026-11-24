@@ -21,7 +21,13 @@ makeinstall_target() {
   mkdir -p ${INSTALL}/usr/lib/libretro
     case ${TARGET_ARCH} in
       aarch64|x86_64) cp -a ../pcsx_rearmed_libretro.so ${INSTALL}/usr/lib/libretro ;;
-      arm) cp -a ../pcsx_rearmed_libretro.so ${INSTALL}/usr/lib/libretro/pcsx_rearmed32_libretro.so ;;
+      arm)
+        if [ "${NATIVE_ARM}" = "yes" ]; then
+          cp -a ../pcsx_rearmed_libretro.so ${INSTALL}/usr/lib/libretro
+        else
+          cp -a ../pcsx_rearmed_libretro.so ${INSTALL}/usr/lib/libretro/pcsx_rearmed32_libretro.so
+        fi
+        ;;
     esac
     if [ "${TARGET_ARCH}" = "aarch64" ] && [ "${ENABLE_32BIT}" = "true" ]; then
       cp -a ${ROOT}/build.${DISTRO}-${DEVICE}.arm/install_pkg/${PKG_NAME}-*/usr/lib/libretro/pcsx_rearmed32_libretro.so ${INSTALL}/usr/lib/libretro

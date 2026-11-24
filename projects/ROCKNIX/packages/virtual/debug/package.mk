@@ -3,7 +3,9 @@
 
 . ${ROOT}/packages/virtual/debug/package.mk
 
-PKG_DEPENDS_TARGET+=" nvtop apitrace renderdoc"
+if [ "${DEVICE}" != "RK3128" ]; then
+  PKG_DEPENDS_TARGET+=" nvtop apitrace renderdoc"
+fi
 
 # strace is broken on 6.19 kernels, so temporarily remove
 PKG_DEPENDS_TARGET=${PKG_DEPENDS_TARGET//"strace"/}

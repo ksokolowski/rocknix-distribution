@@ -1,0 +1,11 @@
+--- a/audio/softsynth/fluidsynth.cpp
++++ b/audio/softsynth/fluidsynth.cpp
+@@ -378,6 +378,8 @@
+ 
+ 	setNum("synth.gain", gain);
+ 	setNum("synth.sample-rate", _outputRate);
++	// Load SoundFont samples when a preset is first used, not all at once.
++	setInt("synth.dynamic-sample-loading", 1);
+ 
+ 	_synth = new_fluid_synth(_settings);
+ 
